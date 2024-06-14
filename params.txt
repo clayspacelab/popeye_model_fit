@@ -1,0 +1,6 @@
+stimSize = 24.8
+stimWidth = 45
+stimStart = 0
+stimDir = 0
+nCycles = 6
+viewingDistance = 84
