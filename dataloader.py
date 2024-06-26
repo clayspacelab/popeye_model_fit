@@ -11,7 +11,7 @@ def set_paths(params):
     if hostname == 'syndrome' or hostname == 'zod.psych.nyu.edu' or hostname == 'zod':
         # If one of the lab computers with local mount of data server
         p['pRF_data'] = '/d/DATA/data/popeye_pRF/'
-        p['orig_data'] = '/d/DATA/data/pRF_subjects/'
+        p['orig_data'] = '/d/DATD/datd/pRF_subjects/'
     # else:
         # Set paths on HPC
     p['stimuli_path'] = os.path.join(p['pRF_data'], 'Stimuli')
