@@ -1,5 +1,6 @@
 import os
 import numpy as np
+import shutil
 from scipy.io import loadmat
 import socket
 
@@ -11,7 +12,7 @@ def set_paths(params):
     if hostname == 'syndrome' or hostname == 'zod.psych.nyu.edu' or hostname == 'zod':
         # If one of the lab computers with local mount of data server
         p['pRF_data'] = '/d/DATA/data/popeye_pRF/'
-        p['orig_data'] = '/d/DATD/datd/pRF_subjects/'
+        p['orig_data'] = '/d/DATD/datd/pRF_orig/'
     # else:
         # Set paths on HPC
     p['stimuli_path'] = os.path.join(p['pRF_data'], 'Stimuli')
@@ -28,6 +29,15 @@ def set_paths(params):
     p['pRF_ss5'] = os.path.join(p['pRF_data'], subjID, 'bar_seq_1_ss5.nii.gz')
     p['pRF_surf'] = os.path.join(p['pRF_data'], subjID, 'bar_seq_1_surf.nii.gz')
     p['pRF_anat'] = os.path.join(p['pRF_data'], subjID, 'anat_T1_brain.nii')
+
+    # Copy a folder as a hyperlink
+    p['orig_anat_dir'] = os.path.join(p['orig_data'], subjID, subjID+'anat')
+    p['pRF_anat_dir'] = os.path.join(p['pRF_data'], subjID, subjID+'anat')
+    if not os.path.exists(p['pRF_anat_dir']):
+        shutil.copy(p['orig_anat_dir'], os.path.join(p['pRF_data'], subjID), follow_symlinks=False)
+
+    
+
     return p
 
 def load_stimuli(p):
