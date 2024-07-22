@@ -9,27 +9,10 @@ import popeye.models_cclab as prfModels
 
 import multiprocessing as mp
 
-def fit_voxel(index, scan_data_visual, css_model, grids, bounds, auto_fit, verbose):
-    ix, iy, iz = index
-    voxel_data = scan_data_visual[ix, iy, iz, :]
-
-    fit_result = css.CompressiveSpatialSummationFit(
-        css_model,
-        voxel_data,
-        grids=grids,
-        bounds=bounds,
-        voxel_index=index,
-        Ns=1,
-        auto_fit=auto_fit,
-        verbose=verbose
-    )
-    
-    return fit_result
-
 def run_fit(index, scan_data_visual, css_model, grids, bounds, auto_fit, verbose):
     return fit_voxel(index, scan_data_visual, css_model, grids, bounds, auto_fit, verbose)
 
-def process_voxel(args):
+def fit_voxel(args):
     # ix, iy, iz, model, data, grids, bounds, auto_fit=True, grid_only=False, verbose=0, visual_rois=None, vx_indices=None, start_time=None):
     ix, iy, iz, model, data, grids, bounds, auto_fit, grid_only, verbose, visual_rois, vx_indices, start_time = args
     if visual_rois[ix, iy, iz] == 1:
