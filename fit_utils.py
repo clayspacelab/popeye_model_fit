@@ -1,10 +1,11 @@
 import numpy as np
 import ctypes, time, os
 import matplotlib.pyplot as plt
+from scipy.signal import detrend
+
 
 # Import popeye stuff
 import popeye.utilities_cclab as utils
-from popeye.visual_stimulus import VisualStimulus
 import popeye.models_cclab as prfModels
 
 import multiprocessing as mp
@@ -41,7 +42,7 @@ def fit_voxel(args):
     
     return None
 
-def remove_trend(signal, method='demean'):
+def remove_trend(signal, method='all'):
     if method == 'demean':
          return (signal - np.mean(signal, axis=-1)[..., None]) / np.mean(signal, axis=-1)[..., None]
         #return detrend(scan_data, axis=-1, type='constant')
@@ -50,3 +51,11 @@ def remove_trend(signal, method='demean'):
     #     return detrend(signal, axis=-1) + mean_signal
     elif method == 'prct_signal_change':
         return utils.percent_change(signal, ax=-1)
+    elif method == 'all':
+        signal_mean = np.mean(signal, axis=-1)[..., None]
+        signal_detrend = detrend(signal, axis=-1, type='linear') + signal_mean
+        signal_pct = utils.percent_change(signal_detrend, ax=-1)
+        return signal_pct
+#         timeseries_data_mean = np.mean(timeseries_data, axis=-1)
+# timeseries_data_detrend = detrend(timeseries_data, axis=-1, type='linear') + timeseries_data_mean[:, np.newaxis]
+# timeseries_data_pct = utils.percent_change(timeseries_data_detrend, ax=-1)
