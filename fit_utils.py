@@ -2,53 +2,23 @@ import numpy as np
 import ctypes, time, os
 import matplotlib.pyplot as plt
 from scipy.signal import detrend
-
-
+from sklearn.metrics import mean_squared_error
 # Import popeye stuff
 import popeye.utilities_cclab as utils
 import popeye.models_cclab as prfModels
 
 import multiprocessing as mp
 
-def run_fit(index, scan_data_visual, css_model, grids, bounds, auto_fit, verbose):
-    return fit_voxel(index, scan_data_visual, css_model, grids, bounds, auto_fit, verbose)
-
-def fit_voxel(args):
-    # ix, iy, iz, model, data, grids, bounds, auto_fit=True, grid_only=False, verbose=0, visual_rois=None, vx_indices=None, start_time=None):
-    ix, iy, iz, model, data, grids, bounds, auto_fit, grid_only, verbose, visual_rois, vx_indices, start_time = args
-    if visual_rois[ix, iy, iz] == 1:
-        th_vx_idx = np.where((vx_indices == (ix, iy, iz)).all(axis=1))[0][0]
-        if np.mod(th_vx_idx, 100) == 0:
-            run_time = time.time() - start_time
-            if run_time < 60:
-                print(f"Finished: {round(th_vx_idx/len(vx_indices)*100, 2)}%, time: {round(run_time, 2)} s")
-            elif run_time < 3600:
-                print(f"Finished: {round(th_vx_idx/len(vx_indices)*100, 2)}%, time: {int(np.floor(run_time/60))} min {round(run_time%60)} s")
-            else:
-                print(f"Finished: {round(th_vx_idx/len(vx_indices)*100, 2)}%, time: {int(np.floor(run_time/3600))} h {int(np.floor(run_time%3600/60))} min {round(run_time%60)} s")
-        voxel_data = data[ix, iy, iz, :]
-        fit = prfModels.CompressiveSpatialSummationFit(
-            model,
-            voxel_data,
-            grids,
-            bounds,
-            (ix, iy, iz),
-            auto_fit=auto_fit,
-            grid_only=grid_only,
-            verbose=verbose
-        )
-        return (ix, iy, iz, fit.theta0, fit.rsquared0, fit.rho0, fit.s0, fit.n0, fit.x0, fit.y0, fit.beta0, fit.baseline0,
-                            fit.theta, fit.rsquared, fit.rho, fit.sigma, fit.n, fit.x, fit.y, fit.beta, fit.baseline)
-    
-    return None
+def print_time(st_time, end_time, process_name):
+    duration = end_time - st_time
+    if duration < 60:
+        print(f'{process_name} took {round(duration, 2)} seconds')
+    elif duration < 3600:
+        print(f'{process_name} took {round(duration/60, 2)} minutes ({round(duration//60, 2)} seconds)')
 
 def remove_trend(signal, method='all'):
     if method == 'demean':
          return (signal - np.mean(signal, axis=-1)[..., None]) / np.mean(signal, axis=-1)[..., None]
-        #return detrend(scan_data, axis=-1, type='constant')
-    # elif method == 'detrend':
-    #     mean_signal = np.mean(signal, axis=-1)[..., None]
-    #     return detrend(signal, axis=-1) + mean_signal
     elif method == 'prct_signal_change':
         return utils.percent_change(signal, ax=-1)
     elif method == 'all':
@@ -56,6 +26,37 @@ def remove_trend(signal, method='all'):
         signal_detrend = detrend(signal, axis=-1, type='linear') + signal_mean
         signal_pct = utils.percent_change(signal_detrend, ax=-1)
         return signal_pct
-#         timeseries_data_mean = np.mean(timeseries_data, axis=-1)
-# timeseries_data_detrend = detrend(timeseries_data, axis=-1, type='linear') + timeseries_data_mean[:, np.newaxis]
-# timeseries_data_pct = utils.percent_change(timeseries_data_detrend, ax=-1)
+
+def constraint_grids(grid_space_orig, stimulus):
+    print(f'Number of grid points: {len(grid_space_orig)}')
+    idxs_to_drop = []
+    for i in range(len(grid_space_orig)):
+        if np.sqrt(grid_space_orig[i][0]**2 + grid_space_orig[i][1]**2) >= 2*stimulus.deg_x0.max():
+            idxs_to_drop.append(i)
+        if np.sqrt(grid_space_orig[i][0]**2 + grid_space_orig[i][1]**2) >= stimulus.deg_x0.max() + 2*grid_space_orig[i][2]:
+            idxs_to_drop.append(i)
+    grid_space = [grid_space_orig[i] for i in range(len(grid_space_orig)) if i not in idxs_to_drop]
+    print(f'Number of grid points after dropping: {len(grid_space)}')
+    return grid_space
+
+def generate_bounds(init_estim, param_width):
+    x_estim, y_estim, sigma_estim, n_estim = init_estim[5], init_estim[6], init_estim[3], init_estim[4]
+    
+    [x_bound_min, x_bound_max] = [x_estim - param_width[0], x_estim + param_width[0]]
+    [y_bound_min, y_bound_max] = [y_estim - param_width[1], y_estim + param_width[1]]
+    [sigma_bound_min, sigma_bound_max] = [sigma_estim - param_width[2], sigma_estim + param_width[2]]
+    [n_bound_min, n_bound_max] = [n_estim - param_width[3], n_estim + param_width[3]]
+    x_bounds = (x_bound_min, x_bound_max)
+    y_bounds = (y_bound_min, y_bound_max)
+    sigma_bounds = (sigma_bound_min, sigma_bound_max)
+    n_bounds = (n_bound_min, n_bound_max)
+
+    # print(iin, x_bounds, y_bounds, sigma_bounds, n_bounds)
+    
+    bounds = (x_bounds, y_bounds, sigma_bounds, n_bounds)
+    return bounds
+
+def error_func(parameters, data, stimulus, objective_function):
+    prediction = objective_function(*parameters, stimulus)
+    error = mean_squared_error(data, prediction, squared=True)
+    return error

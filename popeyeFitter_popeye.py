@@ -1,12 +1,9 @@
 import numpy as np
-import ctypes, time, os
-import sys
-# from ipywidgets import interact, widgets
+import ctypes, time, os, sys
 
 # Import visualization stuff
 import matplotlib.pyplot as plt
 import nibabel as nib
-from nilearn import plotting
 from scipy.signal import detrend
 
 # Import popeye stuff
