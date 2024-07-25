@@ -7,10 +7,10 @@ import nibabel as nib
 from scipy.signal import detrend
 
 # Import popeye stuff
-import popeye.utilities_cclab as utils
+import popeye.utilities_md as utils
 from popeye.visual_stimulus import VisualStimulus
 # import popeye.models_cclab as prfModels
-import popeye.css_cclab as prfModels
+import popeye.css_md as css
 
 # Import multiprocessing stuff
 import multiprocessing as mp
@@ -18,8 +18,8 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 from itertools import product
 
 # Load helper functions
-from dataloader import *
-from fit_utils import *
+# from dataloader import *
+# from fit_utils import *
 from fitutils_css import *
 import ctypes
 
@@ -39,15 +39,15 @@ def main():
     params['resampleFactor'] = 1
     params['dtype'] = ctypes.c_int16
 
-    p = set_paths(params)
+    p = utils.set_paths(params)
 
     # Load stimulus
-    bar, _ = load_stimuli(p)
+    bar, _ = utils.load_stimuli(p)
     bar = bar[:, :, 0:201]
     # Mirror y axis (this is done because popeye flips the y axis)
     bar = np.flip(bar, axis=0)
 
-    copy_files(p, params)
+    utils.copy_files(p, params)
 
     # Extract number of TRs
     method = 'ss5'
