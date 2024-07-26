@@ -28,7 +28,7 @@ def remove_trend(signal, method='all'):
         return signal_pct
 
 def constraint_grids(grid_space_orig, stimulus):
-    print(f'Number of grid points: {len(grid_space_orig)}')
+    # print(f'Number of grid points: {len(grid_space_orig)}')
     idxs_to_drop = []
     for i in range(len(grid_space_orig)):
         if np.sqrt(grid_space_orig[i][0]**2 + grid_space_orig[i][1]**2) >= 2*stimulus.deg_x0.max():
@@ -36,7 +36,7 @@ def constraint_grids(grid_space_orig, stimulus):
         if np.sqrt(grid_space_orig[i][0]**2 + grid_space_orig[i][1]**2) >= stimulus.deg_x0.max() + 2*grid_space_orig[i][2]:
             idxs_to_drop.append(i)
     grid_space = [grid_space_orig[i] for i in range(len(grid_space_orig)) if i not in idxs_to_drop]
-    print(f'Number of grid points after dropping: {len(grid_space)}')
+    # print(f'Number of grid points after dropping: {len(grid_space)}')
     return grid_space
 
 def generate_bounds(init_estim, param_width):
@@ -57,6 +57,7 @@ def generate_bounds(init_estim, param_width):
     return bounds
 
 def error_func(parameters, data, stimulus, objective_function):
-    prediction = objective_function(*parameters, stimulus)
+    # prediction = objective_function(*parameters, stimulus)
+    prediction = objective_function([*parameters, stimulus])
     error = mean_squared_error(data, prediction, squared=True)
     return error

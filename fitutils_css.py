@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import time
 from multiprocessing import Pool, cpu_count
 from concurrent.futures import ThreadPoolExecutor
-from scipy.optimize import minimize
+from scipy.optimize import minimize, NonlinearConstraint
 from itertools import product
 from fit_utils import *
 
@@ -136,10 +136,10 @@ def get_grid_estims(grid_preds, grid_space, timeseries_data, gFit, indices):
     
     args = [(iin, timeseries_data, grid_preds, grid_space, indices) for iin in range(nvoxs)]
     
-    # with Pool(cpu_count()) as pool:
-    #     results = pool.map(process_voxel, args)
-    with ThreadPoolExecutor() as executor:
-        results = executor.map(process_voxel, args)
+    with Pool(cpu_count()) as pool:
+        results = pool.map(process_voxel, args)
+    # with ThreadPoolExecutor() as executor:
+    #     results = executor.map(process_voxel, args)
     
     for iix, iiy, iiz, overload_estim in results:
         gFit[iix, iiy, iiz, :] = overload_estim
@@ -170,7 +170,6 @@ def rerun_gFit_vox(args):
     # n_grid = np.linspace(n_estim-param_width[3], n_estim+param_width[3], Ns)
     n_grid = np.asarray([0.25, 0.5, 0.75, 1.0])
     grid_space_orig = list(product(x_grid, y_grid, s_grid, n_grid))
-    print(x_grid, y_grid, s_grid)
     # print(grid_space_orig)
     # Constraint the grids
     grid_space = constraint_grids(grid_space_orig, stimulus)
@@ -246,20 +245,31 @@ def get_final_estims(gFit, param_width, timeseries_data, stimulus, fFit, indices
         
 
         unscaled_data = (timeseries_data[iin, :] - baseline_estim) / beta_estim
-        finfit = minimize(error_func,
-                          [x_estim, y_estim, sigma_estim, n_estim],
-                          bounds=bounds,
-                          method = 'SLSQP',
-                            # method='COBYLA',
-                          args=(unscaled_data, stimulus, generate_grid_prediction_new))#,
+        # finfit = minimize(error_func,
+        #                   [x_estim, y_estim, sigma_estim, n_estim],
+        #                   bounds=bounds,
+        #                   method = 'SLSQP',
+        #                     # method='COBYLA',
+        #                   args=(unscaled_data, stimulus, generate_grid_prediction_new))#,
                         #   constraints = ({'type': 'ineq', 'fun': lambda x: np.sqrt(x[0]**2 + x[1]**2) - 2*stimulus.deg_x0.max()},
                         #                   {'type': 'ineq', 'fun': lambda x: np.sqrt(x[0]**2 + x[1]**2) - (stimulus.deg_x0.max() + 2*x[2])}))
                         #   constraints = ({'type': 'ineq', 'fun': lambda x: 2*stimulus.deg_x0.max() - np.sqrt(x[0]**2 + x[1]**2)},
                         #                     {'type': 'ineq', 'fun': lambda x: stimulus.deg_x0.max() + 2*x[2] - np.sqrt(x[0]**2 + x[1]**2)}))
                         
-        
-        overload_finestim = overload_estimate(finfit.x, unscaled_data, generate_grid_prediction_new(*finfit.x, stimulus))
-        overload_finestim = overload_estimate(finfit.x, timeseries_data[iin, :], generate_grid_prediction_new(*finfit.x, stimulus))
+        constraints = (
+                NonlinearConstraint(lambda x: np.sqrt(x[0]**2 + x[1]**2), 
+                                    -np.inf, 2*stimulus.deg_x0.max()),
+                NonlinearConstraint(lambda x: np.sqrt(x[0]**2 + x[1]**2) - 2*x[2], 
+                                    -np.inf, stimulus.deg_x0.max())
+            )
+        finfit = minimize(error_func,
+                          [x_estim, y_estim, sigma_estim, n_estim],
+                          bounds=bounds,
+                          method = 'COBYLA',
+                          args=(unscaled_data, stimulus, generate_grid_prediction),
+                          constraints = constraints)#,
+        overload_finestim = overload_estimate(finfit.x, unscaled_data, generate_grid_prediction([*finfit.x, stimulus]))
+        # overload_finestim = overload_estimate(finfit.x, timeseries_data[iin, :], generate_grid_prediction([*finfit.x, stimulus]))
         iix, iiy, iiz = indices[iin]
         fFit[iix, iiy, iiz, :] = overload_finestim
     return fFit
