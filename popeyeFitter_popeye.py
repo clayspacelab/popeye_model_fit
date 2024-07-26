@@ -110,7 +110,7 @@ def main():
     # good_rois = r2_data > r2thresh
     # visual_rois = visual_rois * good_rois
 
-    nvoxs = 1000
+    nvoxs = 100
     # Select 100 random voxels from visual ROIs
     voxels = np.argwhere(visual_rois)
     np.random.shuffle(voxels)

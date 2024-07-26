@@ -13,7 +13,7 @@ from scipy.signal import detrend
 import popeye.utilities_cclab as utils
 from popeye.visual_stimulus import VisualStimulus
 # import popeye.models_cclab as prfModels
-import popeye.css_cclab as prfModels
+# import popeye.css_cclab as prfModels
 
 # Import multiprocessing stuff
 import multiprocessing as mp
@@ -95,8 +95,8 @@ def main():
     # Combine all ROIs using boolean OR
     visual_rois = lh_v1 + lh_v2d + lh_v3d + lh_v3ab + rh_v1 + rh_v2d + rh_v3d + rh_v3ab
     visual_rois = visual_rois > 0
-    visual_rois = lh_v1 + rh_v1 #+ lh_v2d + rh_v2d
-    visual_rois = visual_rois > 0
+    # visual_rois = lh_v1 + rh_v1 #+ lh_v2d + rh_v2d
+    # visual_rois = visual_rois > 0
 
     nan_voxs = np.isnan(scan_data).any(axis=-1)
     visual_rois = visual_rois * ~nan_voxs
@@ -113,14 +113,14 @@ def main():
     # good_rois = r2_data > r2thresh
     # visual_rois = visual_rois * good_rois
 
-    nvoxs = 1000
-    # Select 100 random voxels from visual ROIs
-    voxels = np.argwhere(visual_rois)
-    np.random.shuffle(voxels)
-    voxels = voxels[:nvoxs]
-    visual_rois = np.zeros_like(visual_rois)
-    for voxel in voxels:
-        visual_rois[voxel[0], voxel[1], voxel[2]] = 1
+    # nvoxs = 1000
+    # # Select 100 random voxels from visual ROIs
+    # voxels = np.argwhere(visual_rois)
+    # np.random.shuffle(voxels)
+    # voxels = voxels[:nvoxs]
+    # visual_rois = np.zeros_like(visual_rois)
+    # for voxel in voxels:
+    #     visual_rois[voxel[0], voxel[1], voxel[2]] = 1
 
     # Create scan data just for visual ROIs
     scan_data_visual = scan_data.copy()
@@ -178,27 +178,6 @@ def main():
         os.makedirs(os.path.join(p['pRF_data'], params['subjID'], 'popeyeFit'))
     nib.save(popeye_gFit, os.path.join(p['pRF_data'], params['subjID'], 'popeyeFit', 'RF_ss5_gFit_popeye.nii.gz'))
 
-    ############################  GRID FIT2 ################################
-    RF_ss5_g2Fit = np.empty((scan_data_visual.shape[0], scan_data_visual.shape[1], scan_data_visual.shape[2], 9))
-    RF_ss5_g2Fit = rerun_gridFit(RF_ss5_gFit, timeseries_data, stimulus, param_width, RF_ss5_g2Fit, indices)
-    tstamp_grid2fit = time.perf_counter()
-    print(f'Obtained grid2 estimates in {tstamp_grid2fit-tstamp_gridestim} seconds')
-
-    # Save the results
-    popeye_g2Fit = nib.nifti1.Nifti1Image(RF_ss5_g2Fit, affine=func_data.affine, header=func_data.header)
-    nib.save(popeye_g2Fit, os.path.join(p['pRF_data'], params['subjID'], 'popeyeFit', 'RF_ss5_g2Fit_popeye.nii.gz'))
-    
-    ############################  FINAL FIT ################################
-    RF_ss5_fFit = np.empty((scan_data_visual.shape[0], scan_data_visual.shape[1], scan_data_visual.shape[2], 9))
-    RF_ss5_fFit = get_final_estims(RF_ss5_g2Fit, param_width, timeseries_data, stimulus, RF_ss5_fFit, indices)
-    tstamp_finalestim = time.perf_counter()
-    print(f'Obtained final estimates in {tstamp_finalestim-tstamp_grid2fit} seconds')
-
-    # Save the results
-    popeye_fFit = nib.nifti1.Nifti1Image(RF_ss5_fFit, affine=func_data.affine, header=func_data.header)
-    nib.save(popeye_fFit, os.path.join(p['pRF_data'], params['subjID'], 'popeyeFit', 'RF_ss5_fFit_popeye.nii.gz'))
-
-    ############################  VISUALIZATION ################################
     f0, axs = plt.subplots(2, 4, figsize=(20, 10))
     axs = axs.flatten()
     for i in range(8):
@@ -211,6 +190,16 @@ def main():
     plt.savefig(os.path.join(p['fig_dir'], 'gridfit_comparison.png'), dpi=300)
     plt.close(f0)
 
+    ############################  GRID FIT2 ################################
+    RF_ss5_g2Fit = np.empty((scan_data_visual.shape[0], scan_data_visual.shape[1], scan_data_visual.shape[2], 9))
+    RF_ss5_g2Fit = rerun_gridFit(RF_ss5_gFit, timeseries_data, stimulus, param_width, RF_ss5_g2Fit, indices)
+    tstamp_grid2fit = time.perf_counter()
+    print(f'Obtained grid2 estimates in {tstamp_grid2fit-tstamp_gridestim} seconds')
+
+    # Save the results
+    popeye_g2Fit = nib.nifti1.Nifti1Image(RF_ss5_g2Fit, affine=func_data.affine, header=func_data.header)
+    nib.save(popeye_g2Fit, os.path.join(p['pRF_data'], params['subjID'], 'popeyeFit', 'RF_ss5_g2Fit_popeye.nii.gz'))
+    
     f1, axs = plt.subplots(2, 4, figsize=(20, 10))
     axs = axs.flatten()
     for i in range(8):
@@ -222,6 +211,16 @@ def main():
         ax.set_ylabel('Popeye')
     plt.savefig(os.path.join(p['fig_dir'], 'gridfit2_comparison.png'), dpi=300)
     plt.close(f1)
+
+    ############################  FINAL FIT ################################
+    RF_ss5_fFit = np.empty((scan_data_visual.shape[0], scan_data_visual.shape[1], scan_data_visual.shape[2], 9))
+    RF_ss5_fFit = get_final_estims(RF_ss5_g2Fit, param_width, timeseries_data, stimulus, RF_ss5_fFit, indices)
+    tstamp_finalestim = time.perf_counter()
+    print(f'Obtained final estimates in {tstamp_finalestim-tstamp_grid2fit} seconds')
+
+    # Save the results
+    popeye_fFit = nib.nifti1.Nifti1Image(RF_ss5_fFit, affine=func_data.affine, header=func_data.header)
+    nib.save(popeye_fFit, os.path.join(p['pRF_data'], params['subjID'], 'popeyeFit', 'RF_ss5_fFit_popeye.nii.gz'))
 
     f2, axs = plt.subplots(2, 4, figsize=(20, 10))
     axs = axs.flatten()
