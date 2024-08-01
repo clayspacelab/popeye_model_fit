@@ -50,7 +50,7 @@ def main():
     # Mirror y axis (this is done because popeye flips the y axis)
     bar = np.flip(bar, axis=0)
 
-    # copy_files(p, params)
+    copy_files(p, params)
 
     # Extract number of TRs
     method = 'ss5'
@@ -113,14 +113,14 @@ def main():
     # good_rois = r2_data > r2thresh
     # visual_rois = visual_rois * good_rois
 
-    nvoxs = 10
-    # Select 100 random voxels from visual ROIs
-    voxels = np.argwhere(visual_rois)
-    np.random.shuffle(voxels)
-    voxels = voxels[:nvoxs]
-    visual_rois = np.zeros_like(visual_rois)
-    for voxel in voxels:
-        visual_rois[voxel[0], voxel[1], voxel[2]] = 1
+    # nvoxs = 1000
+    # # Select 100 random voxels from visual ROIs
+    # voxels = np.argwhere(visual_rois)
+    # np.random.shuffle(voxels)
+    # voxels = voxels[:nvoxs]
+    # visual_rois = np.zeros_like(visual_rois)
+    # for voxel in voxels:
+    #     visual_rois[voxel[0], voxel[1], voxel[2]] = 1
 
     # Create scan data just for visual ROIs
     scan_data_visual = scan_data.copy()

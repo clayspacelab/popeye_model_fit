@@ -9,13 +9,18 @@ hostname = socket.gethostname()
 def set_paths(params):
     subjID = params['subjID']
     p = {}
-    if hostname == 'syndrome' or hostname == 'zod.psych.nyu.edu' or hostname == 'zod':
+    if hostname == 'syndrome' or hostname == 'zod.psych.nyu.edu' or hostname == 'zod' or hostname == 'vader':
         # If one of the lab computers with local mount of data server
         p['pRF_data'] = '/d/DATA/data/popeye_pRF/'
         p['orig_data'] = '/d/DATD/datd/pRF_orig/'
+    elif hostname == 'log2':
+        # Running on HPC
+        p['pRF_data'] = '/scratch/mdd9787/popeye_pRF/greene/'
+        
     else: # Set paths on local macbook of Mrugank
         p['pRF_data'] = '/Users/mrugankdake/Documents/Clayspace/MRI/popeye_pRF/'
         p['orig_data'] = '/Users/mrugankdake/Documents/Clayspace/MRI/pRF_orig/'
+
     # else:
         # Set paths on HPC
     p['stimuli_path'] = os.path.join(p['pRF_data'], 'Stimuli')
@@ -35,6 +40,8 @@ def set_paths(params):
     p['pRF_anat'] = os.path.join(p['pRF_data'], subjID, 'anat_T1_brain.nii')
 
     # Figure directory
+    if not os.path.exists(os.path.join(p['pRF_data'], subjID)):
+        os.mkdir(os.path.join(p['pRF_data'], subjID))
     p['fig_dir'] = os.path.join(p['pRF_data'], subjID, 'figures')
     if not os.path.exists(p['fig_dir']):
         os.mkdir(p['fig_dir'])
