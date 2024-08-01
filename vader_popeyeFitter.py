@@ -1,8 +1,11 @@
+## This is being setup to run popeye on Vader
 import numpy as np
 import ctypes, time, os
 import sys
 # from ipywidgets import interact, widgets
 
+# Adding path to popeye temporarily
+sys.path.append('/hyper/toolboxes/popeye')
 # Import visualization stuff
 import matplotlib.pyplot as plt
 import nibabel as nib
@@ -50,7 +53,7 @@ def main():
     # Mirror y axis (this is done because popeye flips the y axis)
     bar = np.flip(bar, axis=0)
 
-    # copy_files(p, params)
+    copy_files(p, params)
 
     # Extract number of TRs
     method = 'ss5'
@@ -113,7 +116,7 @@ def main():
     # good_rois = r2_data > r2thresh
     # visual_rois = visual_rois * good_rois
 
-    nvoxs = 10
+    nvoxs = 100
     # Select 100 random voxels from visual ROIs
     voxels = np.argwhere(visual_rois)
     np.random.shuffle(voxels)
