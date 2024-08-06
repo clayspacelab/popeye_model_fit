@@ -13,7 +13,7 @@ def set_paths(params):
         # If one of the lab computers with local mount of data server
         p['pRF_data'] = '/d/DATA/data/popeye_pRF/'
         p['orig_data'] = '/d/DATD/datd/pRF_orig/'
-    elif hostname == 'log2':
+    elif hostname == 'log-1' or hostname == 'log-2' or hostname == 'log-3' or hostname == 'log-4':
         # Running on HPC
         p['pRF_data'] = '/scratch/mdd9787/popeye_pRF/greene/'
         
