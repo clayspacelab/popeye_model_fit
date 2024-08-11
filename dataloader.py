@@ -5,33 +5,36 @@ from scipy.io import loadmat
 import socket
 
 hostname = socket.gethostname()
+print(hostname)
 
 def set_paths(params):
     subjID = params['subjID']
     p = {}
+    p['hostname'] = hostname
     if hostname == 'syndrome' or hostname == 'zod.psych.nyu.edu' or hostname == 'zod' or hostname == 'vader':
         # If one of the lab computers with local mount of data server
         p['pRF_data'] = '/d/DATA/data/popeye_pRF/'
         p['orig_data'] = '/d/DATD/datd/pRF_orig/'
     elif hostname == 'log-1' or hostname == 'log-2' or hostname == 'log-3' or hostname == 'log-4':
         # Running on HPC
-        p['pRF_data'] = '/scratch/mdd9787/popeye_pRF/greene/'
+        p['pRF_data'] = '/scratch/mdd9787/popeye_pRF_greene/'
+    elif 'hpc' in hostname:
+        # Running on HPC
+        p['pRF_data'] = '/scratch/mdd9787/popeye_pRF_greene/'
         
     else: # Set paths on local macbook of Mrugank
         p['pRF_data'] = '/Users/mrugankdake/Documents/Clayspace/MRI/popeye_pRF/'
         p['orig_data'] = '/Users/mrugankdake/Documents/Clayspace/MRI/pRF_orig/'
+        # Paths for relevant files from the original data
+        p['orig_brainmask'] = os.path.join(p['orig_data'], subjID, 'surfanat_brainmask_hires.nii.gz')
+        p['orig_func'] = os.path.join(p['orig_data'], subjID, 'RF1', subjID+'_RF1_vista', 'bar_seq_1_func.nii.gz')
+        p['orig_ss5'] = os.path.join(p['orig_data'], subjID, 'RF1', subjID+'_RF1_vista', 'bar_seq_1_ss5.nii.gz')
+        p['orig_surf'] = os.path.join(p['orig_data'], subjID, 'RF1', subjID+'_RF1_vista', 'bar_seq_1_surf.nii.gz')
+        p['orig_anat'] = os.path.join(p['orig_data'], subjID, 'anat_T1_brain.nii')
 
-    # else:
-        # Set paths on HPC
     p['stimuli_path'] = os.path.join(p['pRF_data'], 'Stimuli')
     p['gridfit_path'] = os.path.join(p['stimuli_path'], 'gridfit.npy')
-    # Paths for relevant files from the original data
-    p['orig_brainmask'] = os.path.join(p['orig_data'], subjID, 'surfanat_brainmask_hires.nii.gz')
-    p['orig_func'] = os.path.join(p['orig_data'], subjID, 'RF1', subjID+'_RF1_vista', 'bar_seq_1_func.nii.gz')
-    p['orig_ss5'] = os.path.join(p['orig_data'], subjID, 'RF1', subjID+'_RF1_vista', 'bar_seq_1_ss5.nii.gz')
-    p['orig_surf'] = os.path.join(p['orig_data'], subjID, 'RF1', subjID+'_RF1_vista', 'bar_seq_1_surf.nii.gz')
-    p['orig_anat'] = os.path.join(p['orig_data'], subjID, 'anat_T1_brain.nii')
-
+    
     # Paths for the new pRF holder
     p['pRF_brainmask'] = os.path.join(p['pRF_data'], subjID, 'surfanat_brainmask_hires.nii.gz')
     p['pRF_func'] = os.path.join(p['pRF_data'], subjID, 'bar_seq_1_func.nii.gz')

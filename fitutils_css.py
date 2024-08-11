@@ -1,23 +1,27 @@
 import numpy as np
-# import cupy as cp
-# from cupyx.scipy.signal import fftconvolve
-# from cupyx.scipy.stats import linregress
-import torch
-from popeye.spinach import generate_og_receptive_field, generate_rf_timeseries, generate_rf_timeseries_nomask
-import popeye.utilities_cclab as utils
+from tqdm import tqdm
+import cupy as cp
+from itertools import product
 from scipy.signal import fftconvolve
 from scipy.stats import linregress
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error
 import matplotlib.pyplot as plt
-import time
-from multiprocessing import Pool, cpu_count
+from multiprocessing import Pool, cpu_count, shared_memory
 from concurrent.futures import ThreadPoolExecutor
 from scipy.optimize import minimize, NonlinearConstraint
-from itertools import product
+import numba, time, ctypes
+
+# from cupyx.scipy.signal import fftconvolve
+# from cupyx.scipy.stats import linregress
+# import torch
+from popeye.spinach import generate_og_receptive_field, generate_rf_timeseries, generate_rf_timeseries_nomask
+import popeye.utilities_cclab as utils
+
+
 from fit_utils import *
 
-device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+# device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 # print(device)
 
 
@@ -26,10 +30,12 @@ def generate_grid_prediction(args):
     x, y, sigma, n, stimulus = args
     # Generate RF
     rf = generate_og_receptive_field(x, y, sigma, stimulus.deg_x, stimulus.deg_y)
+    # rf = utils.generate_og_receptive_field(x, y, sigma, stimulus.deg_x, stimulus.deg_y)
     rf /= ((2 * np.pi * sigma**2) * 1/np.diff(stimulus.deg_x[0,0:2])**2)
 
     # Extract the stimulus time-series
     response = generate_rf_timeseries_nomask(stimulus.stim_arr, rf)
+    # response = utils.generate_rf_timeseries(stimulus.stim_arr, rf)
     response **= n
     predsig = fftconvolve(response, utils.double_gamma_hrf(0, 1.3))[0:len(response)]
     # Normalize the units
@@ -43,109 +49,159 @@ def generate_grid_prediction(args):
 
     return predsig
 
-def generate_grid_prediction_new(x, y, sigma, n, stimulus):
-    # stimulus, x, y, sigma, n = args
-    # x, y, sigma, n, stimulus = args
-    # Generate RF
-    rf = generate_og_receptive_field(x, y, sigma, stimulus.deg_x, stimulus.deg_y)
-    rf /= ((2 * np.pi * sigma**2) * 1/np.diff(stimulus.deg_x[0,0:2])**2)
+def getGridPreds(grid_space, stimulus, p, timeseries_data):
+    grid_preds = np.empty((len(grid_space), timeseries_data.shape[-1]))#, dtype='float16')
+    print("Starting prediction generation")
+    with Pool(cpu_count()) as pool:
+        results = pool.map(generate_grid_prediction, [(x, y, s, n, stimulus) for x, y, s, n in grid_space])
 
-    # Extract the stimulus time-series
-    response = generate_rf_timeseries_nomask(stimulus.stim_arr, rf)
-    response **= n
+    for i, prediction in enumerate(results):
+        grid_preds[i] = prediction
+    # Save grid_preds to disk
+    np.save(p['gridfit_path'], grid_preds)
+    return grid_preds
 
-    predsig = fftconvolve(response, utils.double_gamma_hrf(0, 1.3))[0:len(response)]
-    # Normalize the units
-    predsig = (predsig - np.mean(predsig)) / np.mean(predsig)
+# def overload_estimate(estimate, data, prediction):
+#       # The input to this should (x, y, sigma, n)
+#       # The output should be (theta, r2, rho, sigma, n, x, y, beta, baseline)
+#       [beta, baseline] = linregress(prediction, data)[0:2]
+#       scaled_prediction = beta * prediction + baseline
+#       r2 = np.corrcoef(data, scaled_prediction)[0, 1]**2
+#       theta = np.mod(np.arctan2(estimate[1], estimate[0]), 2*np.pi)
+#       rho = np.sqrt(estimate[0]**2 + estimate[1]**2)
+#       return (theta, r2, rho, estimate[2], estimate[3], estimate[0], estimate[1], beta, baseline)
 
-    # predsig *= beta
-    # predsig += baseline
-    # response_pt = torch.tensor(response, device=device, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
-    # hrf = torch.tensor(utils.double_gamma_hrf(0, 1.3), device=device, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+# def overload_estimate(estimate, data, prediction):
+#     X = np.vstack((np.ones(len(prediction)), prediction)).T
+#     betas = np.linalg.lstsq(X, data, rcond=None)[0]
+#     scaled_prediction = np.dot(X, betas)
+#     r2 = np.corrcoef(data, scaled_prediction)[0, 1]**2
+#     theta = np.mod(np.arctan2(estimate[1], estimate[0]), 2*np.pi)
+#     rho = np.sqrt(estimate[0]**2 + estimate[1]**2)
+#     return (theta, r2, rho, estimate[2], estimate[3], estimate[0], estimate[1], betas[1], betas[0])
 
-    # predsig = torch.nn.functional.conv1d(response_pt, hrf, padding='same').squeeze().cpu().numpy()
-
-    # predsig = (predsig - np.mean(predsig)) / np.mean(predsig)
-
-    return predsig
-
-
+@numba.jit(nopython=True)
 def overload_estimate(estimate, data, prediction):
-      # The input to this should (x, y, sigma, n)
-      # The output should be (theta, r2, rho, sigma, n, x, y, beta, baseline)
-      [beta, baseline] = linregress(prediction, data)[0:2]
-      scaled_prediction = beta * prediction + baseline
-      r2 = np.corrcoef(data, scaled_prediction)[0, 1]**2
-      theta = np.mod(np.arctan2(estimate[1], estimate[0]), 2*np.pi)
-      rho = np.sqrt(estimate[0]**2 + estimate[1]**2)
-      return (theta, r2, rho, estimate[2], estimate[3], estimate[0], estimate[1], beta, baseline)
-      
+    X = np.vstack((np.ones(len(prediction)), prediction)).T
+    XtX = np.dot(X.T, X)
+    XtY = np.dot(X.T, data)
+    betas = np.linalg.solve(XtX, XtY)
+    scaled_prediction = np.dot(X, betas)
+    r2 = np.corrcoef(data, scaled_prediction)[0, 1]**2
+    theta = np.mod(np.arctan2(estimate[1], estimate[0]), 2*np.pi)
+    rho = np.sqrt(estimate[0]**2 + estimate[1]**2)
+    return (theta, r2, rho, estimate[2], estimate[3], estimate[0], estimate[1], betas[1], betas[0])
+
+@numba.jit(nopython=True)
 def compute_rmse(args):
     data, predictor_series = args
     predictor_series = predictor_series.reshape(-1, 1)
-    model = LinearRegression().fit(predictor_series, data)
-    predictions = model.predict(predictor_series)
-    rmse = mean_squared_error(data, predictions, squared=True)
-    # for model betas that are negative, make rmses very large
-    for i in range(len(model.coef_)):
-        if model.coef_[i] < 0:
-            rmse = 1000000
-    return rmse
 
-def compute_rmse_gpu(args):
-    data, predictor_series = args
+    X = np.hstack((np.ones((predictor_series.shape[0], 1)), predictor_series))
+    y = data
 
-    data_pt = torch.tensor(data, device=device, dtype=torch.float32).unsqueeze(1)
-    predictor_series_pt = torch.tensor(predictor_series, device=device, dtype=torch.float32).unsqueeze(1)
+    XtX = np.dot(X.T, X)
+    XtX_inv = np.linalg.inv(XtX)
+    XtX_inv_Xt = np.dot(XtX_inv, X.T)
+    betas = np.dot(XtX_inv_Xt, y)
 
-    model = torch.nn.Linear(1, 1).to(device)
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
-    criterion = torch.nn.MSELoss()
-    for _ in range(100):
-        optimizer.zero_grad()
-        outputs = model(predictor_series_pt)
-        loss = criterion(outputs, data_pt)
-        loss.backward()
-        optimizer.step()
+    predictions = np.dot(X, betas)
 
-    predictions = model(predictor_series_pt).cpu().detach().numpy()
-    rmse = mean_squared_error(data, predictions, squared=True)
+    rmse = np.mean((data - predictions)**2)
 
-    if model.weight.item() < 0:
+    if np.any(betas[1:] < 0):
         rmse = 1000000
     return rmse
+
+# @numba.jit(nopython=True)
+def compute_rmse_hpc(args):
+    data, predictor_series = args
+    data = cp.array(data)
+    predictor_series = cp.asarray(predictor_series).reshape(-1, 1)
+
+    X = cp.hstack((cp.ones((predictor_series.shape[0], 1)), predictor_series))
+    y = data
+
+    XtX = cp.dot(X.T, X)
+    XtX_inv = cp.linalg.inv(XtX)
+    XtX_inv_Xt = cp.dot(XtX_inv, X.T)
+    betas = cp.dot(XtX_inv_Xt, y)
+
+    predictions = cp.dot(X, betas)
+
+    rmse = cp.mean((data - predictions)**2)
+
+    if cp.any(betas[1:] < 0):
+        rmse = 1000000
+    return rmse
+
+# @numba.jit(nopython=False)      
+# def compute_rmse(args):
+#     data, predictor_series = args
+#     predictor_series = predictor_series.reshape(-1, 1)
+#     model = LinearRegression().fit(predictor_series, data)
+#     predictions = model.predict(predictor_series)
+#     rmse = mean_squared_error(data, predictions, squared=True)
+#     # for model betas that are negative, make rmses very large
+#     if np.any(model.coef_ < 0):
+#         rmse = 1000000
+#     return rmse
+
+
+# def compute_rmse_gpu(args):
+#     data, predictor_series = args
+
+#     data_pt = torch.tensor(data, device=device, dtype=torch.float32).unsqueeze(1)
+#     predictor_series_pt = torch.tensor(predictor_series, device=device, dtype=torch.float32).unsqueeze(1)
+
+#     model = torch.nn.Linear(1, 1).to(device)
+#     optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+#     criterion = torch.nn.MSELoss()
+#     for _ in range(100):
+#         optimizer.zero_grad()
+#         outputs = model(predictor_series_pt)
+#         loss = criterion(outputs, data_pt)
+#         loss.backward()
+#         optimizer.step()
+
+#     predictions = model(predictor_series_pt).cpu().detach().numpy()
+#     rmse = mean_squared_error(data, predictions, squared=True)
+
+#     if model.weight.item() < 0:
+#         rmse = 1000000
+#     return rmse
 
 def process_voxel(args):
     iin, timeseries_data, grid_preds, grid_space, indices = args
     ngrids = len(grid_preds)
     
-    args = [(timeseries_data[iin, :], grid_preds[j]) for j in range(ngrids)]
+    args = [(timeseries_data, grid_preds[j]) for j in range(ngrids)]
 
-    rmses = []
-    for j in range(ngrids):
-        rmses.append(compute_rmse(args[j]))
-    
-    best_grid_estim = grid_space[np.argmin(rmses)]
-    overload_estim = overload_estimate(best_grid_estim, timeseries_data[iin, :], grid_preds[np.argmin(rmses)])
+    rmses = np.array([compute_rmse(arg) for arg in args])
+
+    best_grid_idx = np.argmin(rmses)
+    best_grid_estim = grid_space[best_grid_idx]
+    overload_estim = overload_estimate(best_grid_estim, timeseries_data, grid_preds[best_grid_idx])
     iix, iiy, iiz = indices[iin]
     
     return iix, iiy, iiz, overload_estim
 
 def get_grid_estims(grid_preds, grid_space, timeseries_data, gFit, indices):
+    timeseries_data = utils.generate_shared_array(timeseries_data, ctypes.c_double)
+    grid_preds = utils.generate_shared_array(grid_preds, ctypes.c_double)
     nvoxs = len(timeseries_data)
     
-    args = [(iin, timeseries_data, grid_preds, grid_space, indices) for iin in range(nvoxs)]
+    args = [(iin, timeseries_data[iin, :], grid_preds, grid_space, indices) for iin in range(nvoxs)]
     
     with Pool(cpu_count()) as pool:
-        results = pool.map(process_voxel, args)
-    # with ThreadPoolExecutor() as executor:
-    #     results = executor.map(process_voxel, args)
+        results = []
+        for result in tqdm(pool.imap(process_voxel, args), total=nvoxs, dynamic_ncols=False):
+            results.append(result)
     
     for iix, iiy, iiz, overload_estim in results:
         gFit[iix, iiy, iiz, :] = overload_estim
     
     return gFit
-
 
 def get_grid2_estims(grid_preds, grid_space, voxel_data):
     ngrids = len(grid_preds)
@@ -158,7 +214,7 @@ def get_grid2_estims(grid_preds, grid_space, voxel_data):
 
 def rerun_gFit_vox(args):
     voxel_data, stimulus, param_width, grid1_estim = args
-    Ns = 5
+    Ns = 10
     # grid1_estim = gFitorig[idx, idy, idz, :]
     # print(grid1_estim)
     x_estim, y_estim, sigma_estim, n_estim = grid1_estim[5], grid1_estim[6], grid1_estim[3], grid1_estim[4]
@@ -203,7 +259,7 @@ def rerun_gridFit_parallel(gFitorig, timeseries_data, stimulus, param_width, gFi
 
 def rerun_gridFit(gFitorig, timeseries_data, stimulus, param_width, gFit, indices):
     nvoxs = len(timeseries_data)
-    Ns = 3
+    Ns = 10
     for iin in range(nvoxs):
         grid1_estim = gFitorig[indices[iin][0], indices[iin][1], indices[iin][2], :]
         x_estim, y_estim, sigma_estim, n_estim = grid1_estim[5], grid1_estim[6], grid1_estim[3], grid1_estim[4]
@@ -239,22 +295,21 @@ def get_final_estims(gFit, param_width, timeseries_data, stimulus, fFit, indices
         init_estim = gFit[indices[iin][0], indices[iin][1], indices[iin][2], :]
         x_estim, y_estim, sigma_estim, n_estim = init_estim[5], init_estim[6], init_estim[3], init_estim[4]
         beta_estim, baseline_estim = init_estim[7], init_estim[8]
-
-        bounds = generate_bounds(init_estim, param_width)
+       
         # Define bounds based on initial estimate from grid-fit
+        bounds = generate_bounds(init_estim, param_width)
         
-
         unscaled_data = (timeseries_data[iin, :] - baseline_estim) / beta_estim
         # finfit = minimize(error_func,
         #                   [x_estim, y_estim, sigma_estim, n_estim],
         #                   bounds=bounds,
         #                   method = 'SLSQP',
         #                     # method='COBYLA',
-        #                   args=(unscaled_data, stimulus, generate_grid_prediction_new))#,
-                        #   constraints = ({'type': 'ineq', 'fun': lambda x: np.sqrt(x[0]**2 + x[1]**2) - 2*stimulus.deg_x0.max()},
-                        #                   {'type': 'ineq', 'fun': lambda x: np.sqrt(x[0]**2 + x[1]**2) - (stimulus.deg_x0.max() + 2*x[2])}))
-                        #   constraints = ({'type': 'ineq', 'fun': lambda x: 2*stimulus.deg_x0.max() - np.sqrt(x[0]**2 + x[1]**2)},
-                        #                     {'type': 'ineq', 'fun': lambda x: stimulus.deg_x0.max() + 2*x[2] - np.sqrt(x[0]**2 + x[1]**2)}))
+        #                   args=(unscaled_data, stimulus, generate_grid_prediction))#,
+        #                   constraints = ({'type': 'ineq', 'fun': lambda x: np.sqrt(x[0]**2 + x[1]**2) - 2*stimulus.deg_x0.max()},
+        #                                   {'type': 'ineq', 'fun': lambda x: np.sqrt(x[0]**2 + x[1]**2) - (stimulus.deg_x0.max() + 2*x[2])}))
+        #                   constraints = ({'type': 'ineq', 'fun': lambda x: 2*stimulus.deg_x0.max() - np.sqrt(x[0]**2 + x[1]**2)},
+        #                                     {'type': 'ineq', 'fun': lambda x: stimulus.deg_x0.max() + 2*x[2] - np.sqrt(x[0]**2 + x[1]**2)}))
                         
         constraints = (
                 NonlinearConstraint(lambda x: np.sqrt(x[0]**2 + x[1]**2), 
@@ -265,7 +320,7 @@ def get_final_estims(gFit, param_width, timeseries_data, stimulus, fFit, indices
         finfit = minimize(error_func,
                           [x_estim, y_estim, sigma_estim, n_estim],
                           bounds=bounds,
-                          method = 'COBYLA',
+                          method = 'SLSQP',
                           args=(unscaled_data, stimulus, generate_grid_prediction),
                           constraints = constraints)#,
         overload_finestim = overload_estimate(finfit.x, unscaled_data, generate_grid_prediction([*finfit.x, stimulus]))
