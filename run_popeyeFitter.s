@@ -7,6 +7,7 @@
 #SBATCH --output=slurm%j.out
 #SBATCH --mail-user=mrugank.dake@nyu.edu
 #SBATCH --mail-type=ALL
+#SBATCH --gres=gpu:1
 
 module purge
 subj='JC'

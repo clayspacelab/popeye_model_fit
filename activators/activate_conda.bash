@@ -23,5 +23,6 @@ unset -f which
 source /opt/apps/lmod/lmod/init/sh
 source /ext3/env.sh
 conda activate prf_fitter
+export CUPY_CACHE_DIR=/scratch/mdd9787/popeye_pRF_greene/overlay_img/cupy_cache
 ${args}
 "

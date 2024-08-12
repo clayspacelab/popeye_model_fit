@@ -80,37 +80,68 @@ def getGridPreds(grid_space, stimulus, p, timeseries_data):
 #     rho = np.sqrt(estimate[0]**2 + estimate[1]**2)
 #     return (theta, r2, rho, estimate[2], estimate[3], estimate[0], estimate[1], betas[1], betas[0])
 
-@numba.jit(nopython=True)
 def overload_estimate(estimate, data, prediction):
-    X = np.vstack((np.ones(len(prediction)), prediction)).T
-    XtX = np.dot(X.T, X)
-    XtY = np.dot(X.T, data)
-    betas = np.linalg.solve(XtX, XtY)
-    scaled_prediction = np.dot(X, betas)
-    r2 = np.corrcoef(data, scaled_prediction)[0, 1]**2
-    theta = np.mod(np.arctan2(estimate[1], estimate[0]), 2*np.pi)
-    rho = np.sqrt(estimate[0]**2 + estimate[1]**2)
+    X = cp.vstack((np.ones(len(prediction)), prediction)).T
+    XtX = cp.dot(X.T, X)
+    XtY = cp.dot(X.T, data)
+    betas = cp.linalg.solve(XtX, XtY)
+    scaled_prediction = cp.dot(X, betas)
+    r2 = cp.corrcoef(data, scaled_prediction)[0, 1]**2
+    theta = cp.mod(np.arctan2(estimate[1], estimate[0]), 2*cp.pi)
+    rho = cp.sqrt(estimate[0]**2 + estimate[1]**2)
     return (theta, r2, rho, estimate[2], estimate[3], estimate[0], estimate[1], betas[1], betas[0])
 
-@numba.jit(nopython=True)
 def compute_rmse(args):
     data, predictor_series = args
     predictor_series = predictor_series.reshape(-1, 1)
 
-    X = np.hstack((np.ones((predictor_series.shape[0], 1)), predictor_series))
+    X = cp.hstack((np.ones((predictor_series.shape[0], 1)), predictor_series))
     y = data
 
-    XtX = np.dot(X.T, X)
-    XtX_inv = np.linalg.inv(XtX)
-    XtX_inv_Xt = np.dot(XtX_inv, X.T)
-    betas = np.dot(XtX_inv_Xt, y)
+    XtX = cp.dot(X.T, X)
+    XtX_inv = cp.linalg.inv(XtX)
+    XtX_inv_Xt = cp.dot(XtX_inv, X.T)
+    betas = cp.dot(XtX_inv_Xt, y)
 
-    predictions = np.dot(X, betas)
+    predictions = cp.dot(X, betas)
 
-    rmse = np.mean((data - predictions)**2)
+    rmse = cp.mean((data - predictions)**2)
 
-    if np.any(betas[1:] < 0):
+    if cp.any(betas[1:] < 0):
         rmse = 1000000
+    return rmse
+
+# @numba.jit(nopython=True)
+# def overload_estimate(estimate, data, prediction):
+#     X = np.vstack((np.ones(len(prediction)), prediction)).T
+#     XtX = np.dot(X.T, X)
+#     XtY = np.dot(X.T, data)
+#     betas = np.linalg.solve(XtX, XtY)
+#     scaled_prediction = np.dot(X, betas)
+#     r2 = np.corrcoef(data, scaled_prediction)[0, 1]**2
+#     theta = np.mod(np.arctan2(estimate[1], estimate[0]), 2*np.pi)
+#     rho = np.sqrt(estimate[0]**2 + estimate[1]**2)
+#     return (theta, r2, rho, estimate[2], estimate[3], estimate[0], estimate[1], betas[1], betas[0])
+
+# @numba.jit(nopython=True)
+# def compute_rmse(args):
+#     data, predictor_series = args
+#     predictor_series = predictor_series.reshape(-1, 1)
+
+#     X = np.hstack((np.ones((predictor_series.shape[0], 1)), predictor_series))
+#     y = data
+
+#     XtX = np.dot(X.T, X)
+#     XtX_inv = np.linalg.inv(XtX)
+#     XtX_inv_Xt = np.dot(XtX_inv, X.T)
+#     betas = np.dot(XtX_inv_Xt, y)
+
+#     predictions = np.dot(X, betas)
+
+#     rmse = np.mean((data - predictions)**2)
+
+#     if np.any(betas[1:] < 0):
+#         rmse = 1000000
     return rmse
 
 # @numba.jit(nopython=True)
@@ -172,14 +203,18 @@ def compute_rmse_hpc(args):
 #     return rmse
 
 def process_voxel(args):
+    cp.clear_memo()
     iin, timeseries_data, grid_preds, grid_space, indices = args
     ngrids = len(grid_preds)
     
     args = [(timeseries_data, grid_preds[j]) for j in range(ngrids)]
 
-    rmses = np.array([compute_rmse(arg) for arg in args])
+    # rmses = np.array([compute_rmse(arg) for arg in args])
+    # Use CuPy for GPU acceleration
+    rmses = cp.array([compute_rmse(arg) for arg in args])
 
-    best_grid_idx = np.argmin(rmses)
+    # best_grid_idx = np.argmin(rmses)
+    best_grid_idx = cp.argmin(rmses)
     best_grid_estim = grid_space[best_grid_idx]
     overload_estim = overload_estimate(best_grid_estim, timeseries_data, grid_preds[best_grid_idx])
     iix, iiy, iiz = indices[iin]

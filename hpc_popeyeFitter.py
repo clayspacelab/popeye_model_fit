@@ -78,7 +78,7 @@ def main():
     # Check number of voxels in brainmask
     print(f"Number of voxels in brainmask: {len(np.argwhere(brainmask_data))}")
 
-    nvoxs = 10000
+    nvoxs = 1000
     print(f"Running model-fit on {nvoxs} voxels")
     # Select 100 random voxels from brainmask
     voxels = np.argwhere(brainmask_data)
