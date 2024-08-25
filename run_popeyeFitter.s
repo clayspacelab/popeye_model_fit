@@ -7,11 +7,10 @@
 #SBATCH --output=slurm%j.out
 #SBATCH --mail-user=mrugank.dake@nyu.edu
 #SBATCH --mail-type=ALL
-#SBATCH --gres=gpu:1
 
 module purge
 subj='JC'
 root_dir='/scratch/mdd9787/popeye_pRF_greene/popeye_model_fit'
 cd $root_dir
 chmod 755 activators/activate_conda.bash
-activators/activate_conda.bash python hpc_popeyeFitter.py $subj
+activators/activate_conda.bash python hpc_SimulationPredictor.py

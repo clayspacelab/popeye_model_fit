@@ -1,6 +1,6 @@
 import numpy as np
 from tqdm import tqdm
-import cupy as cp
+# import cupy as cp
 from itertools import product
 from scipy.signal import fftconvolve
 from scipy.stats import linregress
