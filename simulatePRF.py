@@ -6,7 +6,7 @@ import popeye.utilities_cclab as utils
 from popeye.visual_stimulus import VisualStimulus
 
 import nibabel as nib
-from ipywidgets import interact, widgets
+# from ipywidgets import interact, widgets
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from multiprocessing import Pool, cpu_count
 from itertools import product
@@ -58,6 +58,7 @@ def main():
 
     nvoxs = 10000
     params_vox = random.sample(params_space, nvoxs)
+    baseline_vox = np.random.uniform(0,10000, nvoxs)
 
     # Generate predictions for all voxels
     with Pool(cpu_count()) as pool:
@@ -66,11 +67,15 @@ def main():
     # Store the predictions in an array
     results = np.array(results)
     # Add a random baseline and noise to each voxel and a linear trend
-    results = results + np.random.normal(0, 0.2, results.shape) + np.linspace(0, 1, results.shape[-1])[None, :] + np.random.uniform(0, 10000, results.shape[0])[:, None] 
+    # Add noise + linear trend + baseline
+    results = results + np.random.normal(0, 0.2, results.shape) + np.linspace(0, 1, results.shape[-1])[None, :] + baseline_vox[:, None]#+ np.random.uniform(0, 10000, results.shape[0])[:, None] 
 
     # Save the results as well as params_space in pickle
     pickle.dump(results, open(os.path.join(p['pRF_data'], 'Simulation', 'simulatedVoxels.pkl'), 'wb'))
-    pickle.dump(params_vox, open(os.path.join(p['pRF_data'], 'Simulation', 'simulatedParams.pkl'), 'wb'))
+    # Save both params_vox and baseline_vox
+    params_to_save = {'params_vox': params_vox, 'baseline_vox': baseline_vox}
+    pickle.dump(params_to_save, open(os.path.join(p['pRF_data'], 'Simulation', 'simulatedParams.pkl'), 'wb'))
+    # pickle.dump(params_vox, open(os.path.join(p['pRF_data'], 'Simulation', 'simulatedParams.pkl'), 'wb'))
 
 
     # Plot 10 random voxels
@@ -79,7 +84,8 @@ def main():
         ax = axs[i//5, i%5]
         ax.plot(results[i])
         ax.set_title(f'x: {round(params_vox[i][0], 2)}, y: {round(params_vox[i][1], 2)}, s: {round(params_vox[i][2], 2)}, n: {round(params_vox[i][3], 2)}')
-    plt.show()
+    plt.savefig(os.path.join(p['pRF_data'], 'Simulation/figures/simulated_voxels.png'), dpi=300)
+    plt.close(f)
 
 
 

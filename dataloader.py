@@ -18,9 +18,9 @@ def set_paths(params):
     elif hostname == 'log-1' or hostname == 'log-2' or hostname == 'log-3' or hostname == 'log-4':
         # Running on HPC
         p['pRF_data'] = '/scratch/mdd9787/popeye_pRF_greene/'
-    elif 'hpc' in hostname:
-        # Running on HPC
-        p['pRF_data'] = '/scratch/mdd9787/popeye_pRF_greene/'
+    elif 'vader' in hostname:
+        # Running on Vader
+        p['pRF_data'] = '/clayspace/data/popeye_pRF/'
         
     else: # Set paths on local macbook of Mrugank
         p['pRF_data'] = '/Users/mrugankdake/Documents/Clayspace/MRI/popeye_pRF/'
