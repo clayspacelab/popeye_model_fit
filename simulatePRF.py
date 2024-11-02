@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_compl
 from multiprocessing import Pool, cpu_count
 from itertools import product
 from scipy.optimize import brute, fmin, minimize, least_squares, fmin_powell
-
+from scipy.io import savemat
 from dataloader import *
 from fit_utils import *
 from fitutils_css import generate_grid_prediction
@@ -72,6 +72,9 @@ def main():
 
     # Save the results as well as params_space in pickle
     pickle.dump(results, open(os.path.join(p['pRF_data'], 'Simulation', 'simulatedVoxels.pkl'), 'wb'))
+    with open(os.path.join(p['pRF_data'], 'Simulation', 'simulatedVoxels.pkl'), 'rb') as f:
+        data_temp = pickle.load(f)
+    savemat(os.path.join(p['pRF_data'], 'Simulation', 'simulatedVoxels.mat'), {'simulatedVoxels': data_temp})
     # Save both params_vox and baseline_vox
     params_to_save = {'params_vox': params_vox, 'baseline_vox': baseline_vox}
     pickle.dump(params_to_save, open(os.path.join(p['pRF_data'], 'Simulation', 'simulatedParams.pkl'), 'wb'))
