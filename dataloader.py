@@ -13,14 +13,14 @@ def set_paths(params):
     p['hostname'] = hostname
     if hostname == 'syndrome' or hostname == 'zod.psych.nyu.edu' or hostname == 'zod' or hostname == 'vader':
         # If one of the lab computers with local mount of data server
-        p['pRF_data'] = '/d/DATA/data/popeye_pRF/'
+        p['pRF_data'] = '/d/DATD/datd/popeye_pRF/'
         p['orig_data'] = '/d/DATD/datd/pRF_orig/'
-    elif hostname == 'log-1' or hostname == 'log-2' or hostname == 'log-3' or hostname == 'log-4':
+    elif hostname == 'log-1' or hostname == 'log-2' or hostname == 'log-3' or hostname == 'log-4' or 'hpc' in hostname:
         # Running on HPC
         p['pRF_data'] = '/scratch/mdd9787/popeye_pRF_greene/'
     elif 'vader' in hostname:
         # Running on Vader
-        p['pRF_data'] = '/clayspace/data/popeye_pRF/'
+        p['pRF_data'] = '/clayspace/datd/popeye_pRF/'
         
     else: # Set paths on local macbook of Mrugank
         p['pRF_data'] = '/Users/mrugankdake/Documents/Clayspace/MRI/popeye_pRF/'

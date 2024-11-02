@@ -126,7 +126,7 @@ def main():
     )
 
     # set search grids
-    Ns = 50
+    Ns = 25
     x_grid = np.concatenate((np.linspace(-stimulus.deg_x0.max(), stimulus.deg_x0.max(), Ns//2),
                         np.geomspace(-stimulus.deg_x0.max(), -2*stimulus.deg_x0.max(), Ns//4),
                             np.geomspace(stimulus.deg_x0.max(), 2*stimulus.deg_x0.max(), Ns//4)))
@@ -134,7 +134,8 @@ def main():
                             np.geomspace(-stimulus.deg_y0.max(), -2*stimulus.deg_y0.max(), Ns//4),
                             np.geomspace(stimulus.deg_y0.max(), 2*stimulus.deg_y0.max(), Ns//4)))
     s_grid = np.concatenate((np.linspace(0.1, 5, 3*Ns//4), np.geomspace(5, stimulus.deg_x0.max(), Ns//4)))
-    n_grid = np.asarray([0.25, 0.5, 0.75, 1])
+    # n_grid = np.asarray([0.25, 0.5, 0.75, 1])
+    n_grid = np.linspace(0.01, 1, Ns)
     grid_space_orig = list(product(x_grid, y_grid, s_grid, n_grid))
     grid_space = constraint_grids(grid_space_orig, stimulus)
     print(f'Number of grid points: {len(grid_space)}')
@@ -160,7 +161,7 @@ def main():
     ############################  GRID FIT ################################
     print('Starting grid fit ...')
     RF_ss5_gFit = np.empty((1, 1, timeseries_data.shape[0], 9))
-    RF_ss5_gFit = get_grid_estims(grid_preds, grid_space, timeseries_data, RF_ss5_gFit, indices, use_gpu=False)
+    RF_ss5_gFit = get_grid_estims(grid_preds, grid_space, timeseries_data, RF_ss5_gFit, indices, use_gpu=True)
     tstamp_gridestim = time.perf_counter()
     # print(f'Obtained grid estimates in {tstamp_gridestim-tstamp_gridpred} seconds')
     print_time(tstamp_gridpred, tstamp_gridestim, 'Grid fit1')
@@ -208,7 +209,7 @@ def main():
 
     # ############################  FINAL FIT ################################
     RF_ss5_fFit = np.empty((1, 1, timeseries_data.shape[0], 9))
-    RF_ss5_fFit = get_final_estims_parallel(RF_ss5_gFit, param_width, timeseries_data, stimulus, RF_ss5_fFit, indices, use_gpu=False)
+    RF_ss5_fFit = get_final_estims(RF_ss5_gFit, param_width, timeseries_data, stimulus, RF_ss5_fFit, indices, use_gpu=False)
     tstamp_finalestim = time.perf_counter()
     # print(f'Obtained final estimates in {tstamp_finalestim-tstamp_gridestim} seconds')
     print_time(tstamp_gridestim, tstamp_finalestim, 'Final fit')
