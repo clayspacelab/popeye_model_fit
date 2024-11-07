@@ -36,6 +36,8 @@ def main():
 
     # gridfit2
     # Initialize parameters
+    print('Initializing parameters...')
+    codeStartTime = time.perf_counter()
     params = {}
     params['subjID'] = sys.argv[1]
     # Got these from Zhengang, and he got it from rsvp_params.txt
@@ -63,7 +65,8 @@ def main():
     params['voxel_size'] = [f_header['pixdim'][i] for i in range(1, 4)]
     params['nTRs'] = func_data.shape[-1]
 
-    # model to fit to
+    # Load scan data
+    print('Loading scan data...')
     scan_data = func_data.get_fdata()
     scan_data = remove_trend(scan_data, method='all')
 

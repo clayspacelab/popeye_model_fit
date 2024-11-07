@@ -1,29 +1,21 @@
 import numpy as np
 from tqdm import tqdm
-import cupy as cp
+# import cupy as cp
 from itertools import product
 from scipy.signal import fftconvolve
 from scipy.stats import linregress
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error
-import matplotlib.pyplot as plt
 from multiprocessing import Pool, cpu_count, shared_memory
 from concurrent.futures import ThreadPoolExecutor
 from scipy.optimize import minimize, NonlinearConstraint
 import numba, time, ctypes
-from numba import cuda, float32
+from numba import cuda
 
-# from cupyx.scipy.signal import fftconvolve
-# from cupyx.scipy.stats import linregress
-# import torch
 from popeye.spinach import generate_og_receptive_field, generate_rf_timeseries, generate_rf_timeseries_nomask
 import popeye.utilities_cclab as utils
 
-
 from fit_utils import *
 
-# device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-# print(device)
 
 
 def generate_grid_prediction(args):
@@ -41,12 +33,6 @@ def generate_grid_prediction(args):
     predsig = fftconvolve(response, utils.double_gamma_hrf(0, 1.3))[0:len(response)]
     # Normalize the units
     predsig = (predsig - np.mean(predsig)) / np.mean(predsig)
-    # response_pt = torch.tensor(response, device=device, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
-    # hrf = torch.tensor(utils.double_gamma_hrf(0, 1.3), device=device, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
-
-    # predsig = torch.nn.functional.conv1d(response_pt, hrf, padding='same').squeeze().cpu().numpy()
-
-    # predsig = (predsig - np.mean(predsig)) / np.mean(predsig)
 
     return predsig
 
@@ -89,12 +75,20 @@ def compute_overload_kernel(X, y, betas, result):
             prediction += X[idx, j] * betas[j]
         error = y[idx] - prediction
         result[idx] = error * error
+# @cuda.jit
+# def compute_rmse_kernel(X, y, betas, rmse_arr):
+#     idx = cuda.grid(1)
+#     if idx < X.shape[0]:
+#         prediction = 0.0
+#         for j in range(X.shape[1]):
+#             prediction += X[idx, j] * betas[j]
+#         error = y[idx] - prediction
+#         rmse_arr[idx] = error * error   
 
 def overload_estimate(estimate, data, prediction, use_gpu=False):
     # Returns (theta, r2, rho, sigma, n, x, y, beta, baseline)
     if use_gpu:
-        import cupy as cp
-        X = cp.vstack((cp.ones(len(prediction)), prediction)).T
+        X = cp.vstack((cp.ones(len(prediction), dtype=cp.float32), prediction)).T
         XtX = cp.dot(X.T, X)
         XtY = cp.dot(X.T, data)
         betas = cp.linalg.solve(XtX, XtY)
@@ -102,42 +96,6 @@ def overload_estimate(estimate, data, prediction, use_gpu=False):
         r2 = cp.corrcoef(data, scaled_prediction)[0, 1]**2
         theta = cp.mod(cp.arctan2(estimate[1], estimate[0]), 2*cp.pi)
         rho = cp.sqrt(estimate[0]**2 + estimate[1]**2)
-    # if use_gpu:
-    #     # Prepare data
-    #     X = np.vstack((np.ones(len(prediction)), prediction)).T.astype(np.float32)
-    #     y = data.astype(np.float32)
-        
-    #     # Allocate GPU memory
-    #     X_device = cuda.to_device(X)
-    #     y_device = cuda.to_device(y)
-
-    #     # Calculate betas on CPU
-    #     XtX = np.dot(X.T, X)
-    #     XtY = np.dot(X.T, y)
-    #     XtX_inv = np.linalg.inv(XtX)
-    #     betas = np.dot(XtX_inv, XtY)
-    #     betas_device = cuda.to_device(betas)
-
-    #     # Kernel to compute RMSE
-    #     rmse_arr = np.zeros(X.shape[0], dtype=np.float32)
-    #     rmse_arr_device = cuda.to_device(rmse_arr)
-        
-    #     threads_per_block = 256
-    #     blocks_per_grid = (X.shape[0] + (threads_per_block - 1)) // threads_per_block
-    #     compute_overload_kernel[blocks_per_grid, threads_per_block](X_device, y_device, betas_device, rmse_arr_device)
-        
-    #     # Copy result back to host
-    #     rmse_arr = rmse_arr_device.copy_to_host()
-    #     rmse = np.sqrt(np.mean(rmse_arr))
-
-    #     # Calculations for theta, r2, rho
-    #     scaled_prediction = np.dot(X, betas)
-    #     r2 = np.corrcoef(data, scaled_prediction)[0, 1]**2
-    #     theta = np.mod(np.arctan2(estimate[1], estimate[0]), 2*np.pi)
-    #     rho = np.sqrt(estimate[0]**2 + estimate[1]**2)
-
-    #     # Ensure betas are numpy arrays for return
-    #     betas = np.array(betas)
     else:
         X = np.vstack((np.ones(len(prediction)), prediction)).T
         XtX = np.dot(X.T, X)
@@ -150,35 +108,27 @@ def overload_estimate(estimate, data, prediction, use_gpu=False):
     
     return (theta, r2, rho, estimate[2], estimate[3], estimate[0], estimate[1], betas[1], betas[0])
 
-# @cuda.jit
-# def compute_rmse_kernel(X, y, betas, rmse_arr):
-#     idx = cuda.grid(1)
-#     if idx < X.shape[0]:
-#         prediction = 0.0
-#         for j in range(X.shape[1]):
-#             prediction += X[idx, j] * betas[j]
-#         error = y[idx] - prediction
-#         rmse_arr[idx] = error * error   
 
 def compute_rmse(args):
     data, predictor_series, use_gpu = args
     predictor_series = predictor_series.reshape(-1, 1)
     y = data
     if use_gpu:
-        import cupy as cp
-        X = cp.hstack((np.ones((predictor_series.shape[0], 1)), cp.asarray(predictor_series)))
+        X = cp.hstack((cp.ones((predictor_series.shape[0], 1), dtype=cp.float32), predictor_series))
         y = cp.asarray(y, dtype=cp.float32)
+
+        # Compute the betas
         XtX = cp.dot(X.T, X)
         XtX_inv = cp.linalg.inv(XtX)
         XtX_inv_Xt = cp.dot(XtX_inv, X.T)
         betas = cp.dot(XtX_inv_Xt, y)
 
+        # Compute predictions and RMSE
         predictions = cp.dot(X, betas)
-
         rmse = cp.mean((data - predictions)**2)
-
         if cp.any(betas[1:] < 0):
             rmse = 1000000
+        return cp.asnumpy(rmse)
     else:
         X = np.hstack((np.ones((predictor_series.shape[0], 1)), predictor_series))
         XtX = np.dot(X.T, X)
@@ -189,37 +139,7 @@ def compute_rmse(args):
         predictions = np.dot(X, betas)
 
         rmse = np.mean((data - predictions)**2)        
-    return rmse
-    # if use_gpu:
-    #     # Allocate GPU memory
-    #     X = np.hstack((np.ones((predictor_series.shape[0], 1)), predictor_series)).astype(np.float32)
-    #     y = y.astype(np.float32)
-        
-    #     X_device = cuda.to_device(X)
-    #     y_device = cuda.to_device(y)
-
-    #     # Define betas and RMSE storage on GPU
-    #     XtX = np.dot(X.T, X)
-    #     XtX_inv = np.linalg.inv(XtX)
-    #     XtX_inv_Xt = np.dot(XtX_inv, X.T)
-    #     betas = np.dot(XtX_inv_Xt, y)
-    #     betas_device = cuda.to_device(betas)
-
-    #     rmse_arr = np.zeros(X.shape[0], dtype=np.float32)
-    #     rmse_arr_device = cuda.to_device(rmse_arr)
-
-    #     # Launch the kernel
-    #     threads_per_block = 256
-    #     blocks_per_grid = (X.shape[0] + (threads_per_block - 1)) // threads_per_block
-    #     compute_rmse_kernel[blocks_per_grid, threads_per_block](X_device, y_device, betas_device, rmse_arr_device)
-
-    #     # Copy result back to host
-    #     rmse_arr = rmse_arr_device.copy_to_host()
-    #     rmse = np.sqrt(np.mean(rmse_arr))
-
-    #     # Check for negative betas
-    #     if np.any(betas[1:] < 0):
-    #         rmse = 1000000
+        return rmse
 
     
 
@@ -229,36 +149,33 @@ def process_voxel(args):
     
     args = [(timeseries_data, grid_preds[j], use_gpu) for j in range(ngrids)]
 
-    # if use_gpu:
-    #     # Use CuPy for GPU acceleration
-    #     import cupy as cp
-    #     cp.clear_memo()
-    #     rmses = cp.array([compute_rmse(arg) for arg in args])
-    #     best_grid_idx = cp.argmin(rmses)
-    # else:
-    #     rmses = np.array([compute_rmse(arg) for arg in args])
-    #     best_grid_idx = np.argmin(rmses)
-    rmses = np.array([compute_rmse(arg) for arg in args])
-    best_grid_idx = np.argmin(rmses)
-    best_grid_estim = grid_space[best_grid_idx]
-    overload_estim = overload_estimate(best_grid_estim, timeseries_data, grid_preds[best_grid_idx], use_gpu)
+    if use_gpu:
+        rmses = cp.array([compute_rmse(arg) for arg in args])
+        best_grid_idx = cp.argmin(rmses)
+        best_grid_estim = grid_space[int(cp.asnumpy(best_grid_idx))]
+        best_grid_pred = grid_preds[int(cp.asnumpy(best_grid_idx))]
+    else:
+        rmses = np.array([compute_rmse(arg) for arg in args])
+        best_grid_idx = np.argmin(rmses)
+        best_grid_estim = grid_space[best_grid_idx]
+        best_grid_pred = grid_preds[best_grid_idx]
+    overload_estim = overload_estimate(best_grid_estim, timeseries_data, best_grid_pred, use_gpu)
     iix, iiy, iiz = indices[iin]
     
     return iix, iiy, iiz, overload_estim
 
 def get_grid_estims(grid_preds, grid_space, timeseries_data, gFit, indices, use_gpu=False):
     
-
     nvoxs = len(timeseries_data)
     
     if use_gpu:
-        args = [(iin, timeseries_data[iin, :], grid_preds, grid_space, indices, use_gpu) for iin in range(nvoxs)]
+        import cupy as cp
+        timeseries_data = cp.asarray(timeseries_data, dtype=cp.float32)
+        grid_preds = cp.asarray(grid_preds, dtype=cp.float32)
         
-        results = []
-        for iin in range(nvoxs):
-            # args = [(iin, timeseries_data[iin, :], grid_preds, grid_space, indices, use_gpu)]
-            results.append(process_voxel(args[iin]))
 
+        args = [(iin, timeseries_data[iin, :], grid_preds, grid_space, indices, use_gpu) for iin in range(nvoxs)]
+        results = [process_voxel(arg) for arg in args]
         for iix, iiy, iiz, overload_estim in results:
             gFit[iix, iiy, iiz, :] = overload_estim
 

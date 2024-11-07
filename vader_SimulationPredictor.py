@@ -1,7 +1,10 @@
-## This is being set up to run popeye on HPC
+## This is being setup to run popeye on Vader
 import numpy as np
 import ctypes, time, os
-import pickle
+import sys, pickle
+
+# Adding path to popeye temporarily
+# sys.path.append('/hyper/toolboxes/popeye')
 
 # Import visualization stuff
 import matplotlib.pyplot as plt
@@ -10,6 +13,9 @@ import nibabel as nib
 # Import popeye stuff
 import popeye.utilities_cclab as utils
 from popeye.visual_stimulus import VisualStimulus
+
+
+
 
 from itertools import product
 
@@ -20,6 +26,7 @@ from fitutils_css import *
 import ctypes
 
 def main():
+
     # gridfit2
     # Initialize parameters
     print('Initializing parameters...')
@@ -82,6 +89,7 @@ def main():
     scan_data = scan_data[:nvox, :]
     trueFit_data = trueFit_data[:nvox, :]
     scan_data_orig = scan_data.copy()
+    
     scan_data = remove_trend(scan_data, method='all')
     # Plot 5 random voxels before and after detrending
     f, axs = plt.subplots(2, 5, figsize=(20, 10))
@@ -152,7 +160,7 @@ def main():
     ############################  GRID FIT ################################
     print('Starting grid fit...')
     RF_ss5_gFit = np.empty((1, 1, timeseries_data.shape[0], 9))
-    RF_ss5_gFit = get_grid_estims(grid_preds, grid_space, timeseries_data, RF_ss5_gFit, indices, use_gpu=False)
+    RF_ss5_gFit = get_grid_estims(grid_preds, grid_space, timeseries_data, RF_ss5_gFit, indices, use_gpu=True)
     tstamp_gridestim = time.perf_counter()
     print_time(tstamp_gridpred, tstamp_gridestim, 'Grid fit1')
 
