@@ -50,11 +50,11 @@ def set_paths(params):
         os.mkdir(p['fig_dir'])
 
     # Copy a folder as a hyperlink
-    if hostname == 'syndrome' or hostname == 'zod.psych.nyu.edu' or hostname == 'zod':
-        p['orig_anat_dir'] = os.path.join(p['orig_data'], subjID, subjID+'anat')
-        p['pRF_anat_dir'] = os.path.join(p['pRF_data'], subjID, subjID+'anat')
-        if not os.path.exists(p['pRF_anat_dir']):
-            shutil.copy(p['orig_anat_dir'], os.path.join(p['pRF_data'], subjID), follow_symlinks=False)
+    # if hostname == 'syndrome' or hostname == 'zod.psych.nyu.edu' or hostname == 'zod':
+    #     p['orig_anat_dir'] = os.path.join(p['orig_data'], subjID, subjID+'anat')
+    #     p['pRF_anat_dir'] = os.path.join(p['pRF_data'], subjID, subjID+'anat')
+    #     if not os.path.exists(p['pRF_anat_dir']):
+    #         shutil.copy(p['orig_anat_dir'], os.path.join(p['pRF_data'], subjID), follow_symlinks=False)
     return p
 
 def load_stimuli(p):

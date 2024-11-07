@@ -1,26 +1,7 @@
 import numpy as np
-from tqdm import tqdm
 import cupy as cp
-from itertools import product
-from scipy.signal import fftconvolve
-from scipy.stats import linregress
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error
-import matplotlib.pyplot as plt
-from multiprocessing import Pool, cpu_count, shared_memory
-from concurrent.futures import ThreadPoolExecutor
-from scipy.optimize import minimize, NonlinearConstraint
-import numba, time, ctypes
-from numba import cuda, float32
-
-# from cupyx.scipy.signal import fftconvolve
-# from cupyx.scipy.stats import linregress
-# import torch
-from popeye.spinach import generate_og_receptive_field, generate_rf_timeseries, generate_rf_timeseries_nomask
-import popeye.utilities_cclab as utils
-
-
-from fit_utils import *
+from multiprocessing import Pool, cpu_count
+import time
 
 
 def test_cuda2(x, y, Nouter, use_gpu=False):
