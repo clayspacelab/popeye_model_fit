@@ -172,7 +172,6 @@ def process_voxel(args):
 
     if use_gpu:
         import cupy as cp
-        
         rmses = cp.array([compute_rmse(arg) for arg in args])
         best_grid_idx = cp.argmin(rmses)
         best_grid_estim = grid_space[int(cp.asnumpy(best_grid_idx))]

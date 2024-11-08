@@ -1,0 +1,12 @@
+gh001.hpc.nyu.edu
+Initializing parameters...
+Loading scan data...
+Running model-fit on 10 voxels
+Creating stimulus object...
+Number of grid points: 248468
+Loading grid predictions from disk
+(175900, 201)
+Grid predictions took 0.24 seconds
+Starting grid fit...
+Grid fit1 took 14 minutes and 5 seconds
+  0%|          | 0/10 [00:00<?, ?it/s]slurmstepd: error: *** JOB 53168671 ON gh001 CANCELLED AT 2024-11-07T18:31:12 DUE TO TIME LIMIT ***

@@ -1,0 +1,14 @@
+gr001.hpc.nyu.edu
+Initializing parameters...
+Loading scan data...
+Running model-fit on 10 voxels
+Creating stimulus object...
+Number of grid points: 248468
+Loading grid predictions from disk
+(175900, 201)
+Grid predictions took 0.3 seconds
+Starting grid fit...
+Grid fit1 took 50.01 seconds
+  0%|          | 0/10 [00:00<?, ?it/s] 10%|█         | 1/10 [00:02<00:22,  2.49s/it] 70%|███████   | 7/10 [00:03<00:01,  2.76it/s]100%|██████████| 10/10 [00:03<00:00,  3.15it/s]
+Final fit took 4.71 seconds
+Total time taken took 58.51 seconds
