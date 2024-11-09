@@ -78,7 +78,7 @@ def main():
         trueFit_data[:, 8] = baseline_vox
 
     # Select first N voxels
-    nvox = 10
+    nvox = 100
     scan_data = scan_data[:nvox, :]
     trueFit_data = trueFit_data[:nvox, :]
     scan_data_orig = scan_data.copy()
@@ -197,7 +197,7 @@ def main():
     # plt.savefig(os.path.join(p['pRF_data'], 'Simulation/figures/gridfit2_comparison.png'), dpi=300)
     # plt.close(f1)
 
-    # ############################  FINAL FIT ################################
+    ############################  FINAL FIT ################################
     RF_ss5_fFit = np.empty((1, 1, timeseries_data.shape[0], 9))
     RF_ss5_fFit = get_final_estims(RF_ss5_gFit, param_width, timeseries_data, stimulus, RF_ss5_fFit, indices, use_gpu=False)
     tstamp_finalestim = time.perf_counter()
