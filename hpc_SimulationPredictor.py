@@ -152,7 +152,7 @@ def main():
     ############################  GRID FIT ################################
     print('Starting grid fit...')
     RF_ss5_gFit = np.empty((1, 1, timeseries_data.shape[0], 9))
-    RF_ss5_gFit = get_grid_estims(grid_preds, grid_space, timeseries_data, RF_ss5_gFit, indices, use_gpu=True)
+    RF_ss5_gFit = get_grid_estims(grid_preds, grid_space, timeseries_data, RF_ss5_gFit, indices, use_gpu=False)
     tstamp_gridestim = time.perf_counter()
     print_time(tstamp_gridpred, tstamp_gridestim, 'Grid fit1')
 
