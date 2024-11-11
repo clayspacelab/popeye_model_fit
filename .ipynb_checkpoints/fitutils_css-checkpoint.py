@@ -184,8 +184,7 @@ def get_grid_estims(grid_preds, grid_space, timeseries_data, gFit, indices, use_
         # Prepare grid_space for all voxel predictions
         nvoxs = timeseries_data.shape[0]  # Number of voxels (timeseries data points)
         
-        # Batch size for processing
-        batch_size = 1
+        batch_size = 1 # Batch size for processing
         
         # Initialize the list to hold overload estimates
         overload_estimations = []
@@ -201,11 +200,38 @@ def get_grid_estims(grid_preds, grid_space, timeseries_data, gFit, indices, use_
         
             # Precompute RMSEs for all grid predictions in the batch
             # Tile the batch data for grid predictions
-            grid_preds_tiled = cp.tile(batch_grid_preds, (end - start, 1, 1))  # Shape: (batch_size, n_grid_points, grid_length)
-            timeseries_data_tiled = cp.tile(batch_timeseries_data[:, None, :], (1, len(batch_grid_preds), 1))  # Shape: (batch_size, n_grid_points, data_length)
+            # grid_preds_tiled = cp.tile(batch_grid_preds, (end - start, 1, 1))  # Shape: (batch_size, n_grid_points, grid_length)
+            # timeseries_data_tiled = cp.tile(batch_timeseries_data[:, None, :], (1, len(batch_grid_preds), 1))  # Shape: (batch_size, n_grid_points, data_length)
+
+            n_grid_points = grid_preds.shape[0]
+            X = cp.hstack((cp.ones((batch_size, n_grid_points, 1), dtype=cp.float32), 
+                   cp.tile(grid_preds[None, :, :], (batch_size, 1, 1))))
+    
+            # Reshape for efficient matrix multiplication
+            # Reshape X to (batch_size * n_grid_points, data_length + 1)
+            X_reshaped = X.reshape(-1, X.shape[-1])
+            y_reshaped = batch_timeseries_data[:, None, :].reshape(-1, batch_timeseries_data.shape[-1])
+            
+            # Compute betas using the formula β = (X^T X)^(-1) X^T Y
+            XtX = cp.dot(X_reshaped.T, X_reshaped)
+            XtX_inv = cp.linalg.inv(XtX)
+            XtX_inv_Xt = cp.dot(XtX_inv, X_reshaped.T)
+            betas = cp.dot(XtX_inv_Xt, y_reshaped.T).T  # Shape (batch_size * n_grid_points, data_length + 1)
+
+            # Reshape betas back to (batch_size, n_grid_points, data_length + 1)
+            betas = betas.reshape(batch_size, n_grid_points, -1)
+            
+            # Compute predictions and RMSE
+            predictions = cp.sum(X * betas[:, :, None, :], axis=-1)
+            rmses = cp.mean((batch_timeseries_data[:, None, :] - predictions) ** 2, axis=-1)
+            
+            # Apply condition to set high RMSE if any non-intercept beta is negative
+            negative_beta_mask = cp.any(betas[:, :, 1:] < 0, axis=-1)
+            rmses[negative_beta_mask] = 1000000
+
         
-            # Compute RMSE for all voxels and grid predictions in the batch
-            rmses = cp.sqrt(((timeseries_data_tiled - grid_preds_tiled) ** 2).mean(axis=2))
+            # # Compute RMSE for all voxels and grid predictions in the batch
+            # rmses = cp.sqrt(((timeseries_data_tiled - grid_preds_tiled) ** 2).mean(axis=2))
         
             # Find the best grid index (minimum RMSE) across all predictions for each voxel in the batch
             best_grid_idx = cp.argmin(rmses, axis=1)  # (batch_size,)
@@ -231,73 +257,7 @@ def get_grid_estims(grid_preds, grid_space, timeseries_data, gFit, indices, use_
         # Update gFit with overload estimates for each voxel
         for iin, (iix, iiy, iiz) in enumerate(indices):
             gFit[iix, iiy, iiz, :] = overload_estimations[iin]
-        # import cupy as cp
-        # timeseries_data = cp.asarray(timeseries_data, dtype=cp.float32)
-        # grid_preds = cp.asarray(grid_preds, dtype=cp.float32)
-        # grid_space = cp.asarray(grid_space, dtype=cp.float32)
 
-        # # Prepare grid_space for all voxel predictions
-        # nvoxs = timeseries_data.shape[0]  # Number of voxels (timeseries data points)
-    
-        # # Precompute RMSEs for all grid predictions at once
-        # # Create a list of indices for easier referencing
-        # grid_preds_tiled = cp.tile(grid_preds, (nvoxs, 1, 1))  # Shape: (nvoxs, n_grid_points, grid_length)
-        # timeseries_data_tiled = cp.tile(timeseries_data[:, None, :], (1, len(grid_preds), 1))  # Shape: (nvoxs, n_grid_points, data_length)
-    
-        # # Compute RMSE for all voxels and grid predictions
-        # rmses = cp.sqrt(((timeseries_data_tiled - grid_preds_tiled)**2).mean(axis=2))
-    
-        # # Find the best grid index (minimum RMSE) across all predictions for each voxel
-        # best_grid_idx = cp.argmin(rmses, axis=1)  # (nvoxs,)
-        # best_grid_estim = grid_space[best_grid_idx]  # Best grid estimation per voxel
-        # best_grid_pred = grid_preds[best_grid_idx]  # Best grid prediction per voxel
-    
-        # # Compute overload estimates for the best grid and update gFit
-        # overload_estimations = [
-        #     overload_estimate(best_grid_estim[i], timeseries_data[i], best_grid_pred[i], use_gpu)
-        #     for i in range(nvoxs)
-        # ]
-    
-        # # Convert CuPy arrays to NumPy before storing in gFit
-        # overload_estimations = [tuple(e.get() if isinstance(e, cp.ndarray) else e for e in overload_estimations[i]) for i in range(nvoxs)]
-
-    
-        # # Update gFit with overload estimates for each voxel
-        # for iin, (iix, iiy, iiz) in enumerate(indices):
-        #     gFit[iix, iiy, iiz, :] = overload_estimations[iin]
-
-        # nvoxs = timeseries_data.shape[0]  # Number of voxels
-        # ng = grid_preds.shape[0]  # Number of grid predictions
-
-        # # Compute RMSE for all timeseries and all grid predictions in parallel
-        # # Reshape timeseries_data to (nvoxs, 1, timeseries_length) and grid_preds to (1, ng, timeseries_length)
-        # timeseries_data = timeseries_data[:, cp.newaxis, :]  # (nvoxs, 1, timeseries_length)
-        # grid_preds = grid_preds[cp.newaxis, :, :]  # (1, ng, timeseries_length)
-
-        # # Compute RMSE for each voxel and grid prediction in parallel
-        # # Using broadcasting: (nvoxs, ng, timeseries_length)
-        # residuals = timeseries_data - grid_preds  # Broadcasting the difference
-        # squared_residuals = cp.square(residuals)  # Square the residuals
-        # rmses = cp.sqrt(cp.mean(squared_residuals, axis=2))  # RMSE for each voxel-grid pair
-
-        # # Find the index of the best grid prediction for each voxel
-        # best_grid_idx = cp.argmin(rmses, axis=1)  # Shape: (nvoxs,)
-
-        # # Get the best grid estimations for each voxel
-        # best_grid_estim = grid_space[best_grid_idx]  # (nvoxs, 4) assuming 4 params per grid
-        # best_grid_pred = grid_preds[cp.arange(nvoxs), best_grid_idx]  # (nvoxs, timeseries_length)
-
-        # # Compute overload estimates for all the best grids in parallel
-        # overload_estimations = []
-        # for i in range(nvoxs):
-        #     overload_estimations.append(overload_estimate(best_grid_estim[i], timeseries_data[i], best_grid_pred[i], use_gpu))
-
-        # # Convert overload_estimations to a numpy array (after moving them to GPU)
-        # overload_estimations = cp.stack(overload_estimations)
-
-        # # Update the result in the gFit array using the voxel indices
-        # gFit = cp.zeros((timeseries_data.shape[1], timeseries_data.shape[1], timeseries_data.shape[1], 8))  # Placeholder
-        # gFit[indices[:, 0], indices[:, 1], indices[:, 2], :] = overload_estimations
 
     # if use_gpu:
     #     import cupy as cp
@@ -454,17 +414,70 @@ def FinalFit_Vox(args):
             NonlinearConstraint(lambda x: np.sqrt(x[0]**2 + x[1]**2) - 2*x[2], 
                                 -np.inf, stimulus.deg_x0.max())
         )
-    try:
-        finfit = minimize(error_func,
-                        [x_estim, y_estim, sigma_estim, n_estim],
-                            bounds=bounds,
-                            method = 'SLSQP',
-                            args=(unscaled_data, stimulus, generate_grid_prediction),
-                            constraints = constraints)#,
-        overload_finestim = overload_estimate(finfit.x, unscaled_data, generate_grid_prediction([*finfit.x, stimulus]))
-        return overload_finestim
-    except ValueError as e:
-        return init_estim
+    
+    nIters = 10
+    widthBuff = 3
+
+    # Initialize best params
+    best_r2 = init_estim[1]
+    best_fit = init_estim
+
+    for i in range(nIters):
+        x_guess = np.random.uniform(x_estim-widthBuff*param_width[0], x_estim+widthBuff*param_width[0])
+        y_guess = np.random.uniform(y_estim-widthBuff*param_width[1], y_estim+widthBuff*param_width[1])
+        sigma_guess = np.random.uniform(sigma_estim-widthBuff*param_width[2], sigma_estim+widthBuff*param_width[2])
+        n_guess = np.random.uniform(n_estim-widthBuff*param_width[3], n_estim+widthBuff*param_width[3])
+
+        try:
+            finfit = minimize(error_func,
+                            [x_guess, y_guess, sigma_guess, n_guess],
+                                bounds=bounds,
+                                method = 'SLSQP',
+                                args=(unscaled_data, stimulus, generate_grid_prediction),
+                                constraints = constraints)#,
+            overload_finestim = overload_estimate(finfit.x, unscaled_data, generate_grid_prediction([*finfit.x, stimulus]))
+            if overload_finestim[1] > best_r2:
+                best_r2 = overload_finestim[1]
+                best_fit = overload_finestim
+        except ValueError as e:
+            continue
+    
+    return best_fit
+
+    
+# def FinalFit_Vox(args):
+#     init_estim, param_width, timeseries_data, stimulus, use_gpu = args
+#     x_estim, y_estim, sigma_estim, n_estim = init_estim[5], init_estim[6], init_estim[3], init_estim[4]
+#     beta_estim, baseline_estim = init_estim[7], init_estim[8]
+    
+#     # Define bounds based on initial estimate from grid-fit
+#     # bounds = generate_bounds(init_estim, param_width)
+#     bounds = ((-stimulus.deg_x0.max()*2, stimulus.deg_x0.max()*2),
+#                 (-stimulus.deg_y0.max()*2, stimulus.deg_y0.max()*2),
+#                 (0.001, stimulus.deg_x0.max()*2),
+#                 (0.001, 2))
+#     if np.isnan(timeseries_data).any():
+#         return np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan
+    
+#     unscaled_data = (timeseries_data - baseline_estim) / beta_estim
+    
+#     constraints = (
+#             NonlinearConstraint(lambda x: np.sqrt(x[0]**2 + x[1]**2), 
+#                                 -np.inf, 2*stimulus.deg_x0.max()),
+#             NonlinearConstraint(lambda x: np.sqrt(x[0]**2 + x[1]**2) - 2*x[2], 
+#                                 -np.inf, stimulus.deg_x0.max())
+#         )
+#     try:
+#         finfit = minimize(error_func,
+#                         [x_estim, y_estim, sigma_estim, n_estim],
+#                             bounds=bounds,
+#                             method = 'SLSQP',
+#                             args=(unscaled_data, stimulus, generate_grid_prediction),
+#                             constraints = constraints)#,
+#         overload_finestim = overload_estimate(finfit.x, unscaled_data, generate_grid_prediction([*finfit.x, stimulus]))
+#         return overload_finestim
+#     except ValueError as e:
+#         return init_estim
 
 
 def get_final_estims(gFit, param_width, timeseries_data, stimulus, fFit, indices, use_gpu=False):

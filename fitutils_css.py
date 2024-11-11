@@ -257,73 +257,7 @@ def get_grid_estims(grid_preds, grid_space, timeseries_data, gFit, indices, use_
         # Update gFit with overload estimates for each voxel
         for iin, (iix, iiy, iiz) in enumerate(indices):
             gFit[iix, iiy, iiz, :] = overload_estimations[iin]
-        # import cupy as cp
-        # timeseries_data = cp.asarray(timeseries_data, dtype=cp.float32)
-        # grid_preds = cp.asarray(grid_preds, dtype=cp.float32)
-        # grid_space = cp.asarray(grid_space, dtype=cp.float32)
 
-        # # Prepare grid_space for all voxel predictions
-        # nvoxs = timeseries_data.shape[0]  # Number of voxels (timeseries data points)
-    
-        # # Precompute RMSEs for all grid predictions at once
-        # # Create a list of indices for easier referencing
-        # grid_preds_tiled = cp.tile(grid_preds, (nvoxs, 1, 1))  # Shape: (nvoxs, n_grid_points, grid_length)
-        # timeseries_data_tiled = cp.tile(timeseries_data[:, None, :], (1, len(grid_preds), 1))  # Shape: (nvoxs, n_grid_points, data_length)
-    
-        # # Compute RMSE for all voxels and grid predictions
-        # rmses = cp.sqrt(((timeseries_data_tiled - grid_preds_tiled)**2).mean(axis=2))
-    
-        # # Find the best grid index (minimum RMSE) across all predictions for each voxel
-        # best_grid_idx = cp.argmin(rmses, axis=1)  # (nvoxs,)
-        # best_grid_estim = grid_space[best_grid_idx]  # Best grid estimation per voxel
-        # best_grid_pred = grid_preds[best_grid_idx]  # Best grid prediction per voxel
-    
-        # # Compute overload estimates for the best grid and update gFit
-        # overload_estimations = [
-        #     overload_estimate(best_grid_estim[i], timeseries_data[i], best_grid_pred[i], use_gpu)
-        #     for i in range(nvoxs)
-        # ]
-    
-        # # Convert CuPy arrays to NumPy before storing in gFit
-        # overload_estimations = [tuple(e.get() if isinstance(e, cp.ndarray) else e for e in overload_estimations[i]) for i in range(nvoxs)]
-
-    
-        # # Update gFit with overload estimates for each voxel
-        # for iin, (iix, iiy, iiz) in enumerate(indices):
-        #     gFit[iix, iiy, iiz, :] = overload_estimations[iin]
-
-        # nvoxs = timeseries_data.shape[0]  # Number of voxels
-        # ng = grid_preds.shape[0]  # Number of grid predictions
-
-        # # Compute RMSE for all timeseries and all grid predictions in parallel
-        # # Reshape timeseries_data to (nvoxs, 1, timeseries_length) and grid_preds to (1, ng, timeseries_length)
-        # timeseries_data = timeseries_data[:, cp.newaxis, :]  # (nvoxs, 1, timeseries_length)
-        # grid_preds = grid_preds[cp.newaxis, :, :]  # (1, ng, timeseries_length)
-
-        # # Compute RMSE for each voxel and grid prediction in parallel
-        # # Using broadcasting: (nvoxs, ng, timeseries_length)
-        # residuals = timeseries_data - grid_preds  # Broadcasting the difference
-        # squared_residuals = cp.square(residuals)  # Square the residuals
-        # rmses = cp.sqrt(cp.mean(squared_residuals, axis=2))  # RMSE for each voxel-grid pair
-
-        # # Find the index of the best grid prediction for each voxel
-        # best_grid_idx = cp.argmin(rmses, axis=1)  # Shape: (nvoxs,)
-
-        # # Get the best grid estimations for each voxel
-        # best_grid_estim = grid_space[best_grid_idx]  # (nvoxs, 4) assuming 4 params per grid
-        # best_grid_pred = grid_preds[cp.arange(nvoxs), best_grid_idx]  # (nvoxs, timeseries_length)
-
-        # # Compute overload estimates for all the best grids in parallel
-        # overload_estimations = []
-        # for i in range(nvoxs):
-        #     overload_estimations.append(overload_estimate(best_grid_estim[i], timeseries_data[i], best_grid_pred[i], use_gpu))
-
-        # # Convert overload_estimations to a numpy array (after moving them to GPU)
-        # overload_estimations = cp.stack(overload_estimations)
-
-        # # Update the result in the gFit array using the voxel indices
-        # gFit = cp.zeros((timeseries_data.shape[1], timeseries_data.shape[1], timeseries_data.shape[1], 8))  # Placeholder
-        # gFit[indices[:, 0], indices[:, 1], indices[:, 2], :] = overload_estimations
 
     # if use_gpu:
     #     import cupy as cp
