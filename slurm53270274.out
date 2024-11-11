@@ -1,0 +1,26 @@
+gv004.hpc.nyu.edu
+Initializing parameters...
+Loading scan data...
+Running model-fit on 25 voxels
+Creating stimulus object...
+Number of grid points: 248468
+Loading grid predictions from disk
+(248468, 201)
+Grid predictions took 0.34 seconds
+Starting grid fit...
+Traceback (most recent call last):
+  File "/scratch/mdd9787/popeye_pRF_greene/popeye_model_fit/hpc_SimulationPredictor.py", line 227, in <module>
+    main()
+  File "/scratch/mdd9787/popeye_pRF_greene/popeye_model_fit/hpc_SimulationPredictor.py", line 155, in main
+    RF_ss5_gFit = get_grid_estims(grid_preds, grid_space, timeseries_data, RF_ss5_gFit, indices, use_gpu=False)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/scratch/mdd9787/popeye_pRF_greene/popeye_model_fit/fitutils_css.py", line 108, in get_grid_estims
+    betas = compute_betas(timeseries_data, grid_preds_expanded, use_gpu)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/scratch/mdd9787/popeye_pRF_greene/popeye_model_fit/fitutils_css.py", line 136, in compute_betas
+    XtX = np.einsum('ijk,ijl->ikl', X.transpose(0, 2, 1), X)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/ext3/miniconda3/envs/prf_fitter/lib/python3.12/site-packages/numpy/core/einsumfunc.py", line 1371, in einsum
+    return c_einsum(*operands, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: operands could not be broadcast together with remapped shapes [original->remapped]: (25,202,248468)->(25,248468,newaxis,202) (25,248468,202)->(25,newaxis,202,248468) 
