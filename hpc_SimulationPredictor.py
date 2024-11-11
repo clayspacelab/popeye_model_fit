@@ -78,7 +78,7 @@ def main():
         trueFit_data[:, 8] = baseline_vox
 
     # Select first N voxels
-    nvox = 100
+    nvox = 10
     scan_data = scan_data[:nvox, :]
     trueFit_data = trueFit_data[:nvox, :]
     scan_data_orig = scan_data.copy()
