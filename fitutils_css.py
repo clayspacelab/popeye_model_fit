@@ -481,7 +481,7 @@ def FinalFit_Vox(args):
                                 -np.inf, stimulus.deg_x0.max())
         )
     
-    nIters = 100
+    nIters = 10
     widthBuff = 3
 
     # Initialize best params
