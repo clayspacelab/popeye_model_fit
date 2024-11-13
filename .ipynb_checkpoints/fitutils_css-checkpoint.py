@@ -182,7 +182,7 @@ def get_grid_estims(grid_preds, grid_space, timeseries_data, gFit, indices, use_
         grid_space = cp.asarray(grid_space, dtype=cp.float32)
         
         # Prepare grid_space for all voxel predictions
-        nvoxs = timeseries_data.shape[0]  # Number of voxels (timeseries data points)
+        nvoxs = timeseries_data.shape[0]
         
         batch_size = 1 # Batch size for processing
         

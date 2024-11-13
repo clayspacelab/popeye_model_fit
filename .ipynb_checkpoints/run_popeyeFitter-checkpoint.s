@@ -14,4 +14,4 @@ subj='JC'
 root_dir='/scratch/mdd9787/popeye_pRF_greene/popeye_model_fit'
 cd $root_dir
 chmod 755 activators/activate_conda.bash
-activators/activate_conda.bash python hpc_SimulationPredictor.py
+activators/activate_conda.bash python testingCuda.py
