@@ -36,8 +36,8 @@ def generate_grid_prediction(args):
 
     return predsig
 
-def getGridPreds(grid_space, stimulus, p, timeseries_data):
-    grid_preds = np.empty((len(grid_space), timeseries_data.shape[-1]))#, dtype='float16')
+def getGridPreds(grid_space, stimulus, p, nTRs):
+    grid_preds = np.empty((len(grid_space), nTRs))#, dtype='float16')
     print("Starting prediction generation")
     with Pool(cpu_count()) as pool:
         results = pool.map(generate_grid_prediction, [(x, y, s, n, stimulus) for x, y, s, n in grid_space])
