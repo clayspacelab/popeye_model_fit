@@ -1,4 +1,0 @@
-NumPy grid search time: 571.6673 seconds
-NumPy best MSE: 2448.2652
-CuPy grid search time: 1.4327 seconds
-CuPy best MSE: 2448.2652
