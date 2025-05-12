@@ -285,10 +285,11 @@ def FinalFit_Vox(args):
     best_fit = init_estim
 
     # for _ in range(nIters):
-    x_guess = np.random.uniform(x_estim-widthBuff*param_width[0], x_estim+widthBuff*param_width[0])
-    y_guess = np.random.uniform(y_estim-widthBuff*param_width[1], y_estim+widthBuff*param_width[1])
-    sigma_guess = np.random.uniform(sigma_estim-widthBuff*param_width[2], sigma_estim+widthBuff*param_width[2])
-    n_guess = np.random.uniform(n_estim-widthBuff*param_width[3], n_estim+widthBuff*param_width[3])
+    # x_guess = np.random.uniform(x_estim-widthBuff*param_width[0], x_estim+widthBuff*param_width[0])
+    # y_guess = np.random.uniform(y_estim-widthBuff*param_width[1], y_estim+widthBuff*param_width[1])
+    # sigma_guess = np.random.uniform(sigma_estim-widthBuff*param_width[2], sigma_estim+widthBuff*param_width[2])
+    # n_guess = np.random.uniform(n_estim-widthBuff*param_width[3], n_estim+widthBuff*param_width[3])
+    x_guess, y_guess, sigma_guess, n_guess = x_estim, y_estim, sigma_estim, n_estim
 
     try:
         finfit = minimize(error_func,
@@ -320,21 +321,7 @@ def get_final_estims(gFit, param_width, timeseries_data, stimulus, fFit, indices
         for result in tqdm(pool.imap(FinalFit_Vox, args), total=nvoxs, dynamic_ncols=False):
             results.append(result)
     
-    # for i, result in enumerate(results):
-    #     fFit[indices[i], :] = result
-    # return fFit
+    for i, result in enumerate(results):
+        fFit[indices[i], :] = result
 
-    # with ThreadPoolExecutor() as executor:
-    #     results = executor.map(FinalFit_Vox, args)
-    # for i, result in enumerate(results):
-    #     fFit[indices[i], :] = result
-    # return fFit
-
-    # start_time = time.time()
-    # for iin in range(nvoxs):
-    #     # Print after every 10% voxels
-    #     if iin % (nvoxs//10) == 0:
-    #         print(f"Processing voxel {iin}/{nvoxs} in {time.time()-start_time} seconds")
-    #     fFit[indices[iin], :] = FinalFit_Vox(args[iin])
-
-    # return fFit
+    return fFit

@@ -10,7 +10,7 @@ print(hostname)
 
 def set_paths_surface(params):
     '''
-    Wrapped for the new version of popeye that will deal with surface level data.
+    Wrapper for the new version of popeye that will deal with surface level data.
     '''
     subjID = params['subjID']
     p = {}
@@ -46,6 +46,9 @@ def set_paths_surface(params):
     funcFiles = os.listdir(p['pRF_root'])
     # funcFiles = [f for f in funcFiles if f.endswith('fsnative_mtsmooth-3mm_bold.func.gii')]
     funcFiles = [f for f in funcFiles if f.endswith('fsnative_smoothed_bold.func.gii')]
+    p['pRF_avgRoot'] = os.path.join(p['pRF_data'], 'sub-' + subjID, 'ses-pRF', 'func_avg') # Root directory where fMRIprep data is stored
+    if not os.path.exists(p['pRF_avgRoot']):
+        os.mkdir(p['pRF_avgRoot'])
 
     # Saving directory
     p['popeyeFitDir'] = os.path.join(p['pRF_data'], 'sub-' + subjID, 'popeyeFit')
@@ -78,34 +81,49 @@ def load_stimuli(p):
 
 
 def averageRuns(p, funcFiles):
-    leftFiles = [f for f in funcFiles if 'L_space' in f]
-    rightFiles = [f for f in funcFiles if 'R_space' in f]
-    # The number of runs should be the same for both left and right hemispheres
-    nRuns = len(leftFiles)
+    avgLeftfName = funcFiles[0].replace('run-01_hemi-L_space', 'hemi-L_avg')
+    avgRightfName = funcFiles[0].replace('run-01_hemi-R_space', 'hemi-R_avg')
+    if os.path.exists(os.path.join(p['pRF_avgRoot'], avgLeftfName)) and os.path.exists(os.path.join(p['pRF_avgRoot'], avgRightfName)):
+        print("Loading average data from disk")
+        imgLeft = nib.load(os.path.join(p['pRF_avgRoot'], avgLeftfName))
+        leftData = np.array([x.data for x in imgLeft.darrays]).T
+        imgRight = nib.load(os.path.join(p['pRF_avgRoot'], avgRightfName))
+        rightData = np.array([x.data for x in imgRight.darrays]).T
+    else:
+        leftFiles = [f for f in funcFiles if 'L_space' in f]
+        rightFiles = [f for f in funcFiles if 'R_space' in f]
+        # The number of runs should be the same for both left and right hemispheres
+        nRuns = len(leftFiles)
+        print(f'Number of runs: {nRuns}')
 
-    for run in range(nRuns):
-        leftFname = os.path.join(p['pRF_root'], leftFiles[run])
-        rightFname = os.path.join(p['pRF_root'], rightFiles[run])
+        for run in range(nRuns):
+            leftFname = os.path.join(p['pRF_root'], leftFiles[run])
+            rightFname = os.path.join(p['pRF_root'], rightFiles[run])
 
-        # Load and extract data
-        imgLeft = nib.load(leftFname)
-        tempLeft = np.array([x.data for x in imgLeft.darrays])
-        tempLeft = np.expand_dims(tempLeft, axis=-1)
+            # Load and extract data
+            imgLeft = nib.load(leftFname)
+            tempLeft = np.array([x.data for x in imgLeft.darrays])
+            tempLeft = np.expand_dims(tempLeft, axis=-1)
 
-        imgRight = nib.load(rightFname)
-        tempRight = np.array([x.data for x in imgRight.darrays])
-        tempRight = np.expand_dims(tempRight, axis=-1)
+            imgRight = nib.load(rightFname)
+            tempRight = np.array([x.data for x in imgRight.darrays])
+            tempRight = np.expand_dims(tempRight, axis=-1)
 
-        if run == 0:
-            leftData = tempLeft
-            rightData = tempRight
-        else:
-            leftData = np.concatenate((leftData, tempLeft), axis=-1)
-            rightData = np.concatenate((rightData, tempRight), axis=-1)
+            if run == 0:
+                leftData = tempLeft
+                rightData = tempRight
+            else:
+                leftData = np.concatenate((leftData, tempLeft), axis=-1)
+                rightData = np.concatenate((rightData, tempRight), axis=-1)
 
-    # Average the runs
-    leftData = np.mean(leftData, axis=-1).T
-    rightData = np.mean(rightData, axis=-1).T
+        # Average the runs
+        leftData = np.mean(leftData, axis=-1).T
+        rightData = np.mean(rightData, axis=-1).T
+
+        # Save the average data
+        save2gifti(leftData, os.path.join(p['pRF_avgRoot'], avgLeftfName), 'left')
+        save2gifti(rightData, os.path.join(p['pRF_avgRoot'], avgRightfName), 'right')
+
 
     # Extract some metadata
     # tr_length = int(float(imgLeft.darrays[0].metadata['TimeStep'])) # in ms
@@ -115,15 +133,23 @@ def averageRuns(p, funcFiles):
     return leftData, rightData, tr_length, nTRs
 
 
-def save2gifti(fitEstims, fpath):
+def save2gifti(data, fpath, hemisphere):
     # Convert data to float32
-    fitEstims = fitEstims.astype(np.float32)
-    giiMeta = nib.gifti.GiftiMetaData( {'AnatomicalStructurePrimary': 'CortexLeft', 
-                                        'PaletteNormalizationMode': 'NORMALIZATION_SELECTED_MAP_DATA', 
-                                        'TimeStep': '1.3', 
-                                     } )
+    data = data.astype(np.float32)
+    if hemisphere == 'left':
+        # Create a GiftiImage object
+        giiMeta = nib.gifti.GiftiMetaData( {'AnatomicalStructurePrimary': 'CortexLeft', 
+                                            'PaletteNormalizationMode': 'NORMALIZATION_SELECTED_MAP_DATA', 
+                                            'TimeStep': '1.3', 
+                                         } )
+    elif hemisphere == 'right':
+        # Create a GiftiImage object
+        giiMeta = nib.gifti.GiftiMetaData( {'AnatomicalStructurePrimary': 'CortexRight', 
+                                            'PaletteNormalizationMode': 'NORMALIZATION_SELECTED_MAP_DATA', 
+                                            'TimeStep': '1.3', 
+                                         } )
     img = nib.gifti.GiftiImage(meta=giiMeta)
-    for i in range(fitEstims.shape[1]):
-        thisParam = nib.gifti.GiftiDataArray(data = fitEstims[:, i])
+    for i in range(data.shape[1]):
+        thisParam = nib.gifti.GiftiDataArray(data = data[:, i])
         img.add_gifti_data_array(thisParam)
     nib.save(img, fpath)
