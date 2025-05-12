@@ -1,13 +1,7 @@
 import numpy as np
 import ctypes, time, os
 import sys
-# from ipywidgets import interact, widgets
-
-# Import visualization stuff
-import matplotlib.pyplot as plt
 import nibabel as nib
-from nilearn import plotting
-from scipy.signal import detrend
 
 # Import popeye stuff
 import popeye.utilities_cclab as utils
@@ -89,7 +83,7 @@ def main():
     # set search grids
     Ns = 35
     x_grid = np.concatenate((np.linspace(-stimulus.deg_x0.max(), stimulus.deg_x0.max(), Ns//2),
-                        np.geomspace(-stimulus.deg_x0.max(), -2*stimulus.deg_x0.max(), Ns//4),
+                            np.geomspace(-stimulus.deg_x0.max(), -2*stimulus.deg_x0.max(), Ns//4),
                             np.geomspace(stimulus.deg_x0.max(), 2*stimulus.deg_x0.max(), Ns//4)))
     y_grid = np.concatenate((np.linspace(-stimulus.deg_y0.max(), stimulus.deg_y0.max(), Ns//2),
                             np.geomspace(-stimulus.deg_y0.max(), -2*stimulus.deg_y0.max(), Ns//4),
