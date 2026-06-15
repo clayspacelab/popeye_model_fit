@@ -17,7 +17,6 @@ import popeye.utilities_cclab as utils
 from fit_utils import *
 
 
-
 def generate_grid_prediction(args):
     # stimulus, x, y, sigma, n = args
     x, y, sigma, n, stimulus = args
@@ -48,6 +47,7 @@ def getGridPreds(grid_space, stimulus, gridPath, nTRs):
     np.save(gridPath, grid_preds)
     return grid_preds
 
+# @numba.jit(nopython=True, parallel=True)
 def overload_estimate(estimate, data, prediction, use_gpu=False):
     # Returns (theta, r2, rho, sigma, n, x, y, beta, baseline)
     if use_gpu:
@@ -312,7 +312,7 @@ def get_final_estims(gFit, param_width, timeseries_data, stimulus, fFit, indices
     timeseries_data = utils.generate_shared_array(timeseries_data, ctypes.c_double)
     gFit = utils.generate_shared_array(gFit, ctypes.c_double)
 
-    # fFit = np.empty((timeseries_data.shape[0], 9))
+    fFit = np.empty((timeseries_data.shape[0], 9))
     nvoxs = len(timeseries_data)
 
     args = [(gFit[indices[iin], :], param_width, timeseries_data[iin, :], stimulus, use_gpu) for iin in range(nvoxs)]
@@ -325,3 +325,77 @@ def get_final_estims(gFit, param_width, timeseries_data, stimulus, fFit, indices
         fFit[indices[i], :] = result
 
     return fFit
+
+# def process_batch(args):
+#     start, end, gFit_shared, param_width, timeseries_shared, stimulus, use_gpu, indices = args
+#     # Reconstruct shared arrays in each subprocess
+#     # gFit = utils.reconstruct_shared_array(gFit_shared)
+#     # timeseries_data = utils.reconstruct_shared_array(timeseries_shared)
+#     gFit = gFit_shared
+#     timeseries_data = timeseries_shared
+#     batch_results = []
+#     for iin in range(start, end):
+#         args_vox = (
+#             gFit[indices[iin], :],
+#             param_width,
+#             timeseries_data[iin, :],
+#             stimulus,
+#             use_gpu
+#         )
+#         batch_results.append(FinalFit_Vox(args_vox))
+#     return batch_results
+
+# def get_final_estims(gFit, param_width, timeseries_data, stimulus, fFit, indices, use_gpu=False, batch_size=1000):
+#     # Create shared arrays
+#     timeseries_shared = utils.generate_shared_array(timeseries_data, ctypes.c_double)
+#     gFit_shared = utils.generate_shared_array(gFit, ctypes.c_double)
+    
+#     nvoxs = len(timeseries_data)
+#     batches = [(i, min(i+batch_size, nvoxs)) for i in range(0, nvoxs, batch_size)]
+
+#     # Prepare batch arguments with shared array handles
+#     batch_args = [
+#         (
+#             start, end,
+#             gFit_shared,  # Pass shared array handle
+#             param_width,
+#             timeseries_shared,  # Pass shared array handle
+#             stimulus,
+#             use_gpu,
+#             indices
+#         )
+#         for start, end in batches
+#     ]
+
+#     with Pool(cpu_count()) as pool:
+#         results = []
+#         for batch_result in tqdm(
+#             pool.imap(process_batch, batch_args),
+#             total=len(batches),
+#             dynamic_ncols=False
+#         ):
+#             results.extend(batch_result)
+    
+#     for i, result in enumerate(results):
+#         fFit[indices[i], :] = result
+
+#     return fFit
+
+
+# def get_final_estims(gFit, param_width, timeseries_data, stimulus, fFit, indices, use_gpu=False, batch_size=1000):
+#     timeseries_data = utils.generate_shared_array(timeseries_data, ctypes.c_double)
+#     gFit = utils.generate_shared_array(gFit, ctypes.c_double)
+
+#     fFit = np.empty((timeseries_data.shape[0], 9))
+#     nvoxs = len(timeseries_data)
+
+#     args = [(gFit[indices[iin], :], param_width, timeseries_data[iin, :], stimulus, use_gpu) for iin in range(nvoxs)]
+#     with Pool(cpu_count()) as pool:
+#         results = []
+#         for result in tqdm(pool.imap(FinalFit_Vox, args), total=nvoxs, dynamic_ncols=False):
+#             results.append(result)
+    
+#     for i, result in enumerate(results):
+#         fFit[indices[i], :] = result
+
+#     return fFit

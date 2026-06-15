@@ -37,15 +37,16 @@ def set_paths_surface(params):
         p['orig_anat'] = os.path.join(p['orig_data'], subjID, 'anat_T1_brain.nii')
 
     p['stimuli_path'] = os.path.join(p['pRF_data'], 'Stimuli')
-    p['gridfit_path_25'] = os.path.join(p['stimuli_path'], 'gridfit_25.npy')
-    p['gridfit_path_35'] = os.path.join(p['stimuli_path'], 'gridfit_35.npy')
-    p['gridfit_path_50'] = os.path.join(p['stimuli_path'], 'gridfit_50.npy')
+    # p['gridfit_path_25'] = os.path.join(p['stimuli_path'], 'gridfit_25.npy')
+    # p['gridfit_path_35'] = os.path.join(p['stimuli_path'], 'gridfit_35.npy')
+    # p['gridfit_path_50'] = os.path.join(p['stimuli_path'], 'gridfit_50.npy')
+    p['gridfit_path'] = os.path.join(p['stimuli_path'], 'gridfit.npy')
     
     # Paths for the new pRF holder
-    p['pRF_root'] = os.path.join(p['pRF_data'], 'sub-' + subjID, 'ses-pRF', 'func_smoothed') # Root directory where fMRIprep data is stored
+    p['pRF_root'] = os.path.join(p['pRF_data'], 'sub-' + subjID, 'ses-pRF', 'func') # Root directory where fMRIprep data is stored
     funcFiles = os.listdir(p['pRF_root'])
     # funcFiles = [f for f in funcFiles if f.endswith('fsnative_mtsmooth-3mm_bold.func.gii')]
-    funcFiles = [f for f in funcFiles if f.endswith('fsnative_smoothed_bold.func.gii')]
+    funcFiles = [f for f in funcFiles if f.endswith('fsnative_bold.func.gii')]
     p['pRF_avgRoot'] = os.path.join(p['pRF_data'], 'sub-' + subjID, 'ses-pRF', 'func_avg') # Root directory where fMRIprep data is stored
     if not os.path.exists(p['pRF_avgRoot']):
         os.mkdir(p['pRF_avgRoot'])
