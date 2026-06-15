@@ -18,6 +18,8 @@ from itertools import product
 from helpersSurface import set_paths_surface, load_stimuli, averageRuns, save2gifti
 from fit_utils import *
 from fitutils_css_Surface import *
+# from fitutils_css_Surface_gpu import *
+# from fitutils_grid_gpu import *
 import ctypes
 
 def main():
@@ -57,6 +59,7 @@ def main():
     rightDataOrig = remove_trend(rightDataOrig, method='all')
     
 
+    nvertices = 1000
     # nvoxs = leftDataOrig.shape[0]
     # print(f"Running model-fit on {nvoxs} voxels for each hemisphere")
     # Select 100 random voxels from brainmask
@@ -65,9 +68,9 @@ def main():
     indicesLeft = voxelsLeft#[:nvoxs]
     voxelsRight = np.arange(rightDataOrig.shape[0])
     # np.random.shuffle(voxelsRight)
-    indicesRight = voxelsRight#[:nvoxs]
+    indicesRight = voxelsRight[:nvertices]#[:nvoxs]
     leftData = leftDataOrig#[indicesLeft, :]
-    rightData = rightDataOrig#[indicesRight, :]
+    rightData = rightDataOrig[indicesRight, :]
 
 
     # create stimulus object from popeye
@@ -94,18 +97,20 @@ def main():
     grid_space = constraint_grids(grid_space_orig, stimulus)
     print(f'Number of grid points: {len(grid_space)}')
 
-    param_width = [np.mean(np.diff(x_grid)), np.mean(np.diff(y_grid)), np.mean(np.diff(s_grid)), np.mean(np.diff(n_grid))]
+    # param_width = [np.mean(np.diff(x_grid)), np.mean(np.diff(y_grid)), np.mean(np.diff(s_grid)), np.mean(np.diff(n_grid))]
     # param_width = np.asarray(round(param_width, 4))
     
     tstamp_start = time.perf_counter()
     
     ############################  GRID PREDICTIONS ################################
-    if Ns == 25:
-        gridPath = p['gridfit_path_25']
-    elif Ns == 35:
-        gridPath = p['gridfit_path_35']
-    elif Ns == 50:
-        gridPath = p['gridfit_path_50']
+    gridPath = p['gridfit_path'].replace('.npy', f'_{Ns}.npy')
+    # if Ns == 25:
+    #     # gridPath = p['gridfit_path'] # add a replace at the end of the path to add _25
+        
+    # elif Ns == 35:
+    #     gridPath = p['gridfit_path_35']
+    # elif Ns == 50:
+    #     gridPath = p['gridfit_path_50']
     if os.path.exists(gridPath):
         print("Loading grid predictions from disk")
         grid_preds = np.load(gridPath)
@@ -119,27 +124,27 @@ def main():
     
     ############################  GRID FIT ################################
     
-    if os.path.exists(os.path.join(p['fitEstimDir'], 'RF_ss5_gFit_popeye_left.func.gii')):
-        print("Loading grid estimates from disk")
-        # RF_left_gFit_img = nib.load(os.path.join(p['fitEstimDir'], 'RF_ss5_gFit_popeye_left.func.gii'))
-        # RF_left_gFit = np.array([x.data for x in RF_left_gFit_img.darrays]).T
-        # print(RF_left_gFit.shape)
-        RF_right_gFit_img = nib.load(os.path.join(p['fitEstimDir'], 'RF_ss5_gFit_popeye_right.func.gii'))
-        RF_right_gFit = np.array([x.data for x in RF_right_gFit_img.darrays]).T
-        print(RF_right_gFit.shape)
-    else:
-        print('Starting grid fit ...')
-        # RF_left_gFit = np.empty((leftDataOrig.shape[0], 9))
-        RF_right_gFit = np.empty((rightDataOrig.shape[0], 9))
-        # RF_left_gFit = get_grid_estims(grid_preds, grid_space, leftData, RF_left_gFit, indicesLeft)
-        RF_right_gFit = get_grid_estims(grid_preds, grid_space, rightData, RF_right_gFit, indicesRight)
-        tstamp_gridestim = time.perf_counter()
-        print(f'Obtained grid estimates in {tstamp_gridestim-tstamp_gridpred} seconds')
-        print_time(tstamp_gridpred, tstamp_gridestim, 'Grid fit1')
+    # if os.path.exists(os.path.join(p['fitEstimDir'], 'RF_ss5_gFit_popeye_right.func.gii')):
+    #     print("Loading grid estimates from disk")
+    #     # RF_left_gFit_img = nib.load(os.path.join(p['fitEstimDir'], 'RF_ss5_gFit_popeye_left.func.gii'))
+    #     # RF_left_gFit = np.array([x.data for x in RF_left_gFit_img.darrays]).T
+    #     # print(RF_left_gFit.shape)
+    #     RF_right_gFit_img = nib.load(os.path.join(p['fitEstimDir'], 'RF_ss5_gFit_popeye_right.func.gii'))
+    #     RF_right_gFit = np.array([x.data for x in RF_right_gFit_img.darrays]).T
+    #     print(RF_right_gFit.shape)
+    # else:
+    print('Starting grid fit ...')
+    # RF_left_gFit = np.empty((leftDataOrig.shape[0], 9))
+    RF_right_gFit = np.empty((rightDataOrig.shape[0], 9))
+    # RF_left_gFit = get_grid_estims(grid_preds, grid_space, leftData, RF_left_gFit, indicesLeft)
+    RF_right_gFit = get_grid_estims(grid_preds, grid_space, rightData, RF_right_gFit, indicesRight)
+    tstamp_gridestim = time.perf_counter()
+    print(f'Obtained grid estimates in {tstamp_gridestim-tstamp_gridpred} seconds')
+    print_time(tstamp_gridpred, tstamp_gridestim, 'Grid fit1')
 
-        # Save the results
-        # save2gifti(RF_left_gFit, fpath=os.path.join(p['fitEstimDir'], 'RF_ss5_gFit_popeye_left.func.gii'))
-        save2gifti(RF_right_gFit, fpath=os.path.join(p['fitEstimDir'], 'RF_ss5_gFit_popeye_right.func.gii'))
+    # Save the results
+    # save2gifti(RF_left_gFit, fpath=os.path.join(p['fitEstimDir'], 'RF_ss5_gFit_popeye_left.func.gii'))
+    save2gifti(RF_right_gFit, fpath=os.path.join(p['fitEstimDir'], 'RF_ss5_gFit_popeye_right.func.gii'), hemisphere='right')
 
         # f0, axs = plt.subplots(2, 4, figsize=(20, 10))
         # axs = axs.flatten()
@@ -177,31 +182,32 @@ def main():
     # plt.close(f1)
 
     # ############################  FINAL FIT ################################
-    print('Starting final fit ...')
-    # RF_left_fFit = np.empty((leftDataOrig.shape[0], 9))
-    RF_right_fFit = np.empty((rightDataOrig.shape[0], 9))
-    # RF_left_fFit = get_final_estims(RF_left_gFit, param_width, leftData, stimulus, RF_left_fFit, indicesLeft)
-    RF_right_fFit = get_final_estims(RF_right_gFit, param_width, rightData, stimulus, RF_right_fFit, indicesRight)
-    tstamp_finalestim = time.perf_counter()
-    print(f'Obtained final estimates in {tstamp_finalestim-tstamp_gridestim} seconds')
-    print_time(tstamp_gridestim, tstamp_finalestim, 'Final fit')
+    # print('Starting final fit ...')
+    # # RF_left_fFit = np.empty((leftDataOrig.shape[0], 9))
+    # RF_right_fFit = np.empty((rightDataOrig.shape[0], 9))
+    # # RF_left_fFit = get_final_estims(RF_left_gFit, param_width, leftData, stimulus, RF_left_fFit, indicesLeft)
+    # RF_right_fFit = get_final_estims(RF_right_gFit, param_width, rightData, stimulus, RF_right_fFit, indicesRight, use_gpu=True)
+    # tstamp_finalestim = time.perf_counter()
+    
+    # # print(f'Obtained final estimates in {tstamp_finalestim-tstamp_gridestim} seconds')
+    # # print_time(tstamp_gridestim, tstamp_finalestim, 'Final fit')
 
-    # Save the results
-    # save2gifti(RF_left_fFit, fpath=os.path.join(p['fitEstimDir'], 'RF_ss5_fFit_popeye_left.func.gii'))
-    save2gifti(RF_right_fFit, fpath=os.path.join(p['fitEstimDir'], 'RF_ss5_fFit_popeye_right.func.gii'))
+    # # Save the results
+    # # save2gifti(RF_left_fFit, fpath=os.path.join(p['fitEstimDir'], 'RF_ss5_fFit_popeye_left.func.gii'))
+    # save2gifti(RF_right_fFit, fpath=os.path.join(p['fitEstimDir'], 'RF_ss5_fFit_popeye_right.func.gii'), hemisphere='right')
 
-    # f2, axs = plt.subplots(2, 4, figsize=(20, 10))
-    # axs = axs.flatten()
-    # for i in range(8):
-    #     ax = axs[i]
-    #     ax.hist(RF_left_fFit[indicesLeft, i].flatten(), bins=50, alpha=0.5, label='Left')
-    #     # ax.hist(RF_right_fFit[indicesRight, i].flatten(), bins=50, alpha=0.5, label='Right')
-    #     ax.plot(ax.get_xlim(), ax.get_xlim(), 'k--')
-    #     ax.set_title(f"Final-fit: {['theta', 'rsquared', 'rho', 'sigma','n', 'x', 'y', 'beta'][i]}")
-    #     ax.set_xlabel('mrVista') 
-    #     ax.set_ylabel('Popeye')
-    # plt.savefig(os.path.join(p['fig_dir'], 'finalfit_comparison.png'), dpi=300)
-    # plt.close(f2)
+    # # f2, axs = plt.subplots(2, 4, figsize=(20, 10))
+    # # axs = axs.flatten()
+    # # for i in range(8):
+    # #     ax = axs[i]
+    # #     ax.hist(RF_left_fFit[indicesLeft, i].flatten(), bins=50, alpha=0.5, label='Left')
+    # #     # ax.hist(RF_right_fFit[indicesRight, i].flatten(), bins=50, alpha=0.5, label='Right')
+    # #     ax.plot(ax.get_xlim(), ax.get_xlim(), 'k--')
+    # #     ax.set_title(f"Final-fit: {['theta', 'rsquared', 'rho', 'sigma','n', 'x', 'y', 'beta'][i]}")
+    # #     ax.set_xlabel('mrVista') 
+    # #     ax.set_ylabel('Popeye')
+    # # plt.savefig(os.path.join(p['fig_dir'], 'finalfit_comparison.png'), dpi=300)
+    # # plt.close(f2)
     
     codeEndTime = time.perf_counter()
     print_time(codeStartTime, codeEndTime, 'Total time taken')

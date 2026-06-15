@@ -6,7 +6,7 @@ from sklearn.metrics import mean_squared_error
 # Import popeye stuff
 import popeye.utilities_cclab as utils
 import popeye.models_cclab as prfModels
-
+import numba
 import multiprocessing as mp
 
 def print_time(st_time, end_time, process_name):
@@ -76,8 +76,10 @@ def generate_bounds(init_estim, param_width):
     bounds = (x_bounds, y_bounds, sigma_bounds, n_bounds)
     return bounds
 
+
 def error_func(parameters, data, stimulus, objective_function):
     # prediction = objective_function(*parameters, stimulus)
     prediction = objective_function([*parameters, stimulus])
-    error = mean_squared_error(data, prediction, squared=True)
+    # error = mean_squared_error(data, prediction, squared=True)
+    error = np.sum((data - prediction)**2)
     return error
