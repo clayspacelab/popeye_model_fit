@@ -147,6 +147,57 @@ def main():
     plt.close(f)
     print(f"Sample plot saved to {fig_dir}/simulated_voxels.png")
 
+    # Plot parameter space visualization (Figure 2)
+    pv_arr = np.array(params_vox)
+    x_vals, y_vals = pv_arr[:, 0], pv_arr[:, 1]
+    s_vals, n_vals = pv_arr[:, 2], pv_arr[:, 3]
+    rho_vals = np.sqrt(x_vals**2 + y_vals**2)
+
+    fig, axs = plt.subplots(2, 2, figsize=(14, 12))
+
+    # Panel 1: RF Centers (x, y) colored by RF size sigma
+    sc1 = axs[0, 0].scatter(x_vals, y_vals, c=s_vals, cmap='plasma', s=15, alpha=0.8)
+    max_deg = float(stimulus.deg_x0.max())
+    circle1 = plt.Circle((0, 0), max_deg, color='#00e5ff', fill=False, linestyle='--', linewidth=1.5, label='FOV Max Deg')
+    axs[0, 0].add_patch(circle1)
+    axs[0, 0].set_aspect('equal', 'box')
+    axs[0, 0].set_xlabel('x (deg)')
+    axs[0, 0].set_ylabel('y (deg)')
+    axs[0, 0].set_title('RF Spatial Centers (x, y) Colored by Size (σ)')
+    cbar1 = fig.colorbar(sc1, ax=axs[0, 0])
+    cbar1.set_label('RF Size σ (deg)')
+    axs[0, 0].grid(True)
+
+    # Panel 2: RF Size (sigma) vs Eccentricity (rho) colored by exponent n
+    sc2 = axs[0, 1].scatter(rho_vals, s_vals, c=n_vals, cmap='viridis', s=15, alpha=0.8)
+    axs[0, 1].set_xlabel('Eccentricity ρ (deg)')
+    axs[0, 1].set_ylabel('RF Size σ (deg)')
+    axs[0, 1].set_title('RF Size (σ) vs. Eccentricity (ρ) Colored by Exponent (n)')
+    cbar2 = fig.colorbar(sc2, ax=axs[0, 1])
+    cbar2.set_label('CSS Exponent n')
+    axs[0, 1].grid(True)
+
+    # Panel 3: CSS Exponent (n) Histogram
+    axs[1, 0].hist(n_vals, bins=30, color='#ff4081', edgecolor='#121212', alpha=0.85)
+    axs[1, 0].set_xlabel('CSS Exponent n')
+    axs[1, 0].set_ylabel('Count')
+    axs[1, 0].set_title('Distribution of CSS Exponent (n)')
+    axs[1, 0].grid(True)
+
+    # Panel 4: Baseline Distribution
+    axs[1, 1].hist(baseline_vox, bins=30, color='#76ff03', edgecolor='#121212', alpha=0.85)
+    axs[1, 1].set_xlabel('Voxel Baseline')
+    axs[1, 1].set_ylabel('Count')
+    axs[1, 1].set_title('Distribution of Voxel Baselines')
+    axs[1, 1].grid(True)
+
+    plt.suptitle('Simulated pRF Parameter Space Overview', fontsize=16, color='#ffffff', y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    param_plot_path = os.path.join(fig_dir, 'simulated_parameter_space.png')
+    plt.savefig(param_plot_path, dpi=300)
+    plt.close(fig)
+    print(f"Parameter space plot saved to {param_plot_path}")
+
 
 if __name__ == '__main__':
     main()
