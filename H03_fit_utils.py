@@ -1,0 +1,147 @@
+"""
+H03_fit_utils.py — Shared utility functions for the pRF fitting pipeline.
+
+Contains:
+    print_time()         — Formatted elapsed time printing
+    remove_trend()       — Signal detrending and percent signal change
+    constraint_grids()   — Eccentricity-based grid space pruning
+    generate_bounds()    — Parameter bounds for optimization
+    error_func()         — Objective function for scipy.optimize.minimize
+"""
+
+import numpy as np
+from scipy.signal import detrend
+
+import popeye.utilities_cclab as utils
+
+
+def print_time(st_time, end_time, process_name):
+    """Print elapsed time in a human-readable format."""
+    duration = end_time - st_time
+    if duration < 60:
+        print(f'{process_name} took {round(duration, 2)} seconds')
+    elif duration < 3600:
+        print(f'{process_name} took {round(duration/60)} minutes '
+              f'and {round(duration%60)} seconds')
+    else:
+        print(f'{process_name} took {round(duration//3600)} hours, '
+              f'{round((duration%3600)//60)} minutes '
+              f'and {round(duration%60)} seconds')
+
+
+def remove_trend(signal, method='all'):
+    """
+    Detrend and normalize fMRI signal.
+
+    Parameters
+    ----------
+    signal : ndarray
+        Input signal array. Last axis is time.
+    method : str
+        'demean'             — subtract and divide by mean
+        'prct_signal_change' — percent signal change (popeye utility)
+        'all'                — linear detrend + percent signal change (default)
+
+    Returns
+    -------
+    ndarray
+        Processed signal.
+    """
+    if method == 'demean':
+        return ((signal - np.mean(signal, axis=-1)[..., None])
+                / np.mean(signal, axis=-1)[..., None])
+    elif method == 'prct_signal_change':
+        return utils.percent_change(signal, ax=-1)
+    elif method == 'all':
+        signal_mean = np.mean(signal, axis=-1)[..., None]
+        signal_detrend = detrend(signal, axis=-1, type='linear') + signal_mean
+        signal_pct = utils.percent_change(signal_detrend, ax=-1)
+        return signal_pct
+    else:
+        raise ValueError(f"Unknown detrend method: '{method}'")
+
+
+def constraint_grids(grid_space_orig, stimulus):
+    """
+    Remove grid points that fall outside the stimulus field of view.
+
+    Applies two eccentricity constraints:
+        1. sqrt(x² + y²) < 2 * max_eccentricity
+        2. sqrt(x² + y²) < max_eccentricity + 2 * sigma
+
+    Parameters
+    ----------
+    grid_space_orig : list of tuple or ndarray
+        Grid points as (x, y, sigma, n) tuples.
+    stimulus : VisualStimulus
+        Popeye stimulus object.
+
+    Returns
+    -------
+    list of list
+        Constrained grid points.
+    """
+    grid_space_orig = np.array(grid_space_orig)
+    x, y, s = grid_space_orig[:, 0], grid_space_orig[:, 1], grid_space_orig[:, 2]
+    distances = np.sqrt(x**2 + y**2)
+
+    max_dist1 = 2 * stimulus.deg_x0.max()
+    max_dist2 = stimulus.deg_x0.max() + 2 * s
+
+    mask = (distances < max_dist1) & (distances < max_dist2)
+    grid_space = grid_space_orig[mask]
+    return grid_space.tolist()
+
+
+def generate_bounds(init_estim, param_width):
+    """
+    Generate parameter bounds for optimization based on grid estimate.
+
+    Parameters
+    ----------
+    init_estim : array-like
+        Initial estimate (9-element: theta, r2, rho, sigma, n, x, y, beta, baseline).
+    param_width : list
+        Search width for [x, y, sigma, n].
+
+    Returns
+    -------
+    tuple of tuple
+        Bounds for (x, y, sigma, n).
+    """
+    x_estim = init_estim[5]
+    y_estim = init_estim[6]
+    sigma_estim = init_estim[3]
+    n_estim = init_estim[4]
+
+    x_bounds = (x_estim - param_width[0], x_estim + param_width[0])
+    y_bounds = (y_estim - param_width[1], y_estim + param_width[1])
+    sigma_bounds = (sigma_estim - param_width[2], sigma_estim + param_width[2])
+    n_bounds = (n_estim - param_width[3], n_estim + param_width[3])
+
+    return (x_bounds, y_bounds, sigma_bounds, n_bounds)
+
+
+def error_func(parameters, data, stimulus, objective_function):
+    """
+    Error function for scipy.optimize.minimize.
+
+    Parameters
+    ----------
+    parameters : array-like
+        Current (x, y, sigma, n) values.
+    data : ndarray
+        Observed timeseries.
+    stimulus : VisualStimulus
+        Popeye stimulus object.
+    objective_function : callable
+        Function that generates predicted timeseries from parameters.
+
+    Returns
+    -------
+    float
+        Sum of squared errors.
+    """
+    prediction = objective_function([*parameters, stimulus])
+    error = np.sum((data - prediction)**2)
+    return error
