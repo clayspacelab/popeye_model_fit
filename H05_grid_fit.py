@@ -130,7 +130,7 @@ def process_voxel(args):
 # ---------------------------------------------------------------------------
 
 def get_grid_estims(grid_preds, grid_space, timeseries_data, gFit, indices,
-                    use_gpu=False, batch_size=1000):
+                    use_gpu=False, batch_size=2000):
     """
     Find the best grid match for all voxels/vertices.
 
@@ -210,8 +210,10 @@ def _overload_estimate_gpu(estimate, data, prediction):
     theta = cp.mod(cp.arctan2(estimate[1], estimate[0]), 2 * cp.pi)
     rho = cp.sqrt(estimate[0]**2 + estimate[1]**2)
 
-    return (theta, r2, rho, estimate[2], estimate[3],
-            estimate[0], estimate[1], betas[1], betas[0])
+    return (float(theta.get()), float(r2.get()), float(rho.get()),
+            float(estimate[2]), float(estimate[3]),
+            float(estimate[0]), float(estimate[1]),
+            float(betas[1].get()), float(betas[0].get()))
 
 
 def _compute_rmse_gpu(data, predictor_series):
@@ -226,122 +228,87 @@ def _compute_rmse_gpu(data, predictor_series):
     betas = cp.dot(XtX_inv_Xt, data)
     predictions = cp.dot(X, betas)
     rmse = cp.mean((data - predictions)**2)
-    return rmse
+    return float(rmse.get())
 
 
 def _get_grid_estims_gpu(grid_preds, grid_space, timeseries_data, gFit,
                          indices, batch_size=2000):
     """
-    GPU-accelerated grid fitting with fully vectorized batch processing.
+    GPU-accelerated grid fitting via high-throughput cuBLAS matrix multiplication.
 
-    Optimizations:
-        1. All vertex-grid combinations computed in parallel
-        2. Vectorized matrix operations across entire batches
-        3. Minimal CPU-GPU transfers
+    Computes OLS regression fits for all voxel-grid combinations in parallel:
+        Y (B x T) @ X^T (T x G) -> S_xy (B x G) matrix product on GPU.
     """
     import cupy as cp
 
     nvoxs = len(timeseries_data)
     ngrids = len(grid_preds)
+    nTRs = timeseries_data.shape[1]
 
-    print(f"GPU Processing: {nvoxs} vertices, {ngrids} grids, batch_size={batch_size}")
+    print(f"GPU Processing: {nvoxs} voxels, {ngrids} grid points, batch_size={batch_size}")
 
-    # Move data to GPU once
-    timeseries_gpu = cp.asarray(timeseries_data, dtype=cp.float32)
-    grid_preds_gpu = cp.asarray(grid_preds, dtype=cp.float32)
+    # Transfer data to GPU
+    timeseries_gpu = cp.asarray(timeseries_data, dtype=cp.float32)  # (B, T)
+    grid_preds_gpu = cp.asarray(grid_preds, dtype=cp.float32)       # (G, T)
 
-    # Process in batches
+    # Precompute grid summary statistics on GPU once
+    grid_means = cp.mean(grid_preds_gpu, axis=1, keepdims=True)     # (G, 1)
+    X_centered = grid_preds_gpu - grid_means                        # (G, T)
+    S_xx = cp.sum(X_centered**2, axis=1)                            # (G,)
+    S_xx[S_xx == 0] = 1e-8
+
     start = 0
-    pbar = tqdm(total=nvoxs, desc="GPU Vectorized Processing", dynamic_ncols=True)
+    pbar = tqdm(total=nvoxs, desc="GPU Matrix Processing", dynamic_ncols=True)
 
     while start < nvoxs:
         end = min(start + batch_size, nvoxs)
-        batch_timeseries = timeseries_gpu[start:end]
+        batch_y = timeseries_gpu[start:end]                         # (B_sub, T)
+        b_sub = batch_y.shape[0]
 
-        batch_results = _process_vertex_batch_gpu(
-            batch_timeseries, grid_preds_gpu, grid_space
-        )
+        # Center batch voxels
+        y_means = cp.mean(batch_y, axis=1, keepdims=True)            # (B_sub, 1)
+        Y_centered = batch_y - y_means                              # (B_sub, T)
+        S_yy = cp.sum(Y_centered**2, axis=1, keepdims=True)          # (B_sub, 1)
 
-        for idx_offset, result in enumerate(batch_results):
-            idx = indices[start + idx_offset]
+        # Matrix multiplication via cuBLAS: S_xy = Y_centered @ X_centered.T
+        S_xy = cp.dot(Y_centered, X_centered.T)                     # (B_sub, G)
+
+        # OLS slope: beta1 = S_xy / S_xx
+        betas1 = S_xy / S_xx[cp.newaxis, :]                          # (B_sub, G)
+
+        # SSE = S_yy - beta1 * S_xy
+        sse = S_yy - (betas1 * S_xy)                                 # (B_sub, G)
+        rmses = sse / nTRs
+
+        # Mask out negative slope estimates (beta1 < 0 -> invalid pRF fit)
+        rmses[betas1 < 0] = 1e9
+
+        # Best grid index for each voxel in batch
+        best_grid_indices = cp.argmin(rmses, axis=1)                 # (B_sub,)
+
+        # Compute full overload estimate for best grid matches
+        best_grid_indices_cpu = cp.asnumpy(best_grid_indices)
+        for i in range(b_sub):
+            best_idx = int(best_grid_indices_cpu[i])
+            best_grid_estim = grid_space[best_idx]
+            best_grid_pred = grid_preds_gpu[best_idx]
+            voxel_data = batch_y[i]
+
+            result = _overload_estimate_gpu(best_grid_estim, voxel_data, best_grid_pred)
+
+            idx = indices[start + i]
             if isinstance(idx, (list, tuple)):
                 gFit[idx[0], idx[1], idx[2], :] = result
             else:
                 gFit[idx, :] = result
 
-        pbar.update(end - start)
         start = end
+        pbar.update(b_sub)
 
     pbar.close()
 
-    # Clean GPU memory
-    del timeseries_gpu, grid_preds_gpu
+    # Free GPU memory
+    del timeseries_gpu, grid_preds_gpu, X_centered, S_xx
     cp.get_default_memory_pool().free_all_blocks()
 
     return gFit
-
-
-def _process_vertex_batch_gpu(timeseries_batch, grid_preds_gpu, grid_space):
-    """Process a batch of vertices on GPU using vectorized operations."""
-    import cupy as cp
-
-    batch_size, nTRs = timeseries_batch.shape
-    ngrids = len(grid_preds_gpu)
-
-    # Expand for broadcasting: (batch, 1, nTRs) vs (1, ngrids, nTRs)
-    timeseries_expanded = cp.expand_dims(timeseries_batch, axis=1)
-    grid_preds_expanded = cp.expand_dims(grid_preds_gpu, axis=0)
-
-    # Vectorized RMSE computation
-    rmses = _compute_rmse_vectorized_gpu(timeseries_expanded, grid_preds_expanded)
-
-    # Find best grid for each vertex
-    best_grid_indices = cp.argmin(rmses, axis=1)
-
-    results = []
-    for i in range(batch_size):
-        best_idx = int(best_grid_indices[i])
-        best_grid_estim = grid_space[best_idx]
-        best_grid_pred = grid_preds_gpu[best_idx]
-        vertex_data = timeseries_batch[i]
-        result = _overload_estimate_gpu(best_grid_estim, vertex_data, best_grid_pred)
-        results.append(result)
-
-    return results
-
-
-def _compute_rmse_vectorized_gpu(timeseries_expanded, grid_preds_expanded):
-    """
-    Vectorized RMSE across all vertex-grid combinations on GPU.
-
-    Parameters
-    ----------
-    timeseries_expanded : cp.ndarray, shape (batch_size, 1, nTRs)
-    grid_preds_expanded : cp.ndarray, shape (1, ngrids, nTRs)
-
-    Returns
-    -------
-    rmses : cp.ndarray, shape (batch_size, ngrids)
-    """
-    import cupy as cp
-
-    batch_size, _, nTRs = timeseries_expanded.shape
-    _, ngrids, _ = grid_preds_expanded.shape
-
-    ones = cp.ones((batch_size, ngrids, nTRs, 1))
-    predictors = grid_preds_expanded[..., cp.newaxis]
-    X = cp.concatenate([ones, predictors], axis=-1)
-
-    X_flat = X.reshape(-1, nTRs, 2)
-    y_flat = timeseries_expanded.reshape(-1, nTRs)
-
-    # Vectorized least squares
-    XtX = cp.sum(X_flat[:, :, :, cp.newaxis] * X_flat[:, :, cp.newaxis, :], axis=1)
-    XtY = cp.sum(X_flat * y_flat[:, :, cp.newaxis], axis=1)
-    betas = cp.linalg.solve(XtX, XtY)
-
-    predictions = cp.sum(X_flat * betas[:, cp.newaxis, :], axis=2)
-    rmse_flat = cp.mean((y_flat - predictions)**2, axis=1)
-    rmses = rmse_flat.reshape(batch_size, ngrids)
-
-    return rmses
