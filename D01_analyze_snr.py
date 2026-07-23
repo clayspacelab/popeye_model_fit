@@ -11,8 +11,9 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 # Import custom modules from the repository
-from helpersSurface import set_paths_surface, load_stimuli, averageRuns
-from fit_utils import remove_trend
+from H01_config import set_paths
+from H02_dataloader import load_stimuli, load_surface_data
+from H03_fit_utils import remove_trend, set_dark_theme
 
 def main():
     # Allow subject ID to be passed as command line argument, default to MAM0606
@@ -30,14 +31,14 @@ def main():
     }
 
     # Set paths and load average data
-    p, funcFiles = set_paths_surface(params)
+    p, funcFiles = set_paths(subj_id, data_format='surface')
     
     snr_dir = os.path.join(p['popeyeFitDir'], 'snrtesting')
     os.makedirs(snr_dir, exist_ok=True)
     print(f"Plots will be saved to: {snr_dir}")
 
     print("Loading surface runs and averaging...")
-    leftDataOrig, rightDataOrig, tr_length, nTRs = averageRuns(p, funcFiles)
+    leftDataOrig, rightDataOrig, tr_length, nTRs = load_surface_data(p, funcFiles)
 
     print("Detrending scan data...")
     leftDataOrigDetrended = remove_trend(leftDataOrig, method='all')
@@ -48,7 +49,7 @@ def main():
         'right': (rightDataOrig, rightDataOrigDetrended)
     }
 
-    plt.style.use('dark_background')
+    set_dark_theme()
 
     for hemi, (data_orig, data_detrended) in hemispheres.items():
         print(f"\nProcessing {hemi} hemisphere...")

@@ -32,7 +32,7 @@ from popeye.visual_stimulus import VisualStimulus
 
 from H01_config import DEFAULT_PARAMS, GRID_DEFAULTS, set_paths
 from H02_dataloader import load_stimuli, save2nifti
-from H03_fit_utils import print_time, remove_trend, constraint_grids
+from H03_fit_utils import print_time, remove_trend, constraint_grids, set_dark_theme
 from H04_grid_predict import getGridPreds
 from H05_grid_fit import get_grid_estims
 from H06_final_fit import get_final_estims

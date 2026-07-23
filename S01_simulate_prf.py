@@ -33,7 +33,7 @@ from popeye.visual_stimulus import VisualStimulus
 
 from H01_config import DEFAULT_PARAMS, set_paths
 from H02_dataloader import load_stimuli
-from H03_fit_utils import constraint_grids
+from H03_fit_utils import constraint_grids, set_dark_theme
 from H04_grid_predict import generate_grid_prediction
 
 
@@ -130,15 +130,18 @@ def main():
 
     print(f"Saved {len(params_vox)} simulated voxels to {sim_dir}")
 
-    # Plot sample voxels
+    # Plot sample voxels with dark theme
+    set_dark_theme()
     f, axs = plt.subplots(2, 5, figsize=(20, 10))
     for i in range(10):
         ax = axs[i // 5, i % 5]
-        ax.plot(results[i])
+        ax.plot(results[i], color='#00e5ff', linewidth=1.5)
         ax.set_title(
             f'x:{params_vox[i][0]:.1f} y:{params_vox[i][1]:.1f} '
-            f's:{params_vox[i][2]:.1f} n:{params_vox[i][3]:.2f}'
+            f's:{params_vox[i][2]:.1f} n:{params_vox[i][3]:.2f}',
+            color='#ffffff'
         )
+        ax.grid(True)
     plt.tight_layout()
     plt.savefig(os.path.join(fig_dir, 'simulated_voxels.png'), dpi=300)
     plt.close(f)
