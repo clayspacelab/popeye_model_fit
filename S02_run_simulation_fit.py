@@ -283,9 +283,11 @@ def _run(args, codeStartTime, p, params):
     # Save and plot grid fit
     sim_fit_dir = os.path.join(p['pRF_data'], 'Simulation', 'popeyeFit')
     os.makedirs(sim_fit_dir, exist_ok=True)
-    save2nifti(RF_ss5_gFit,
-               os.path.join(sim_fit_dir, 'RF_ss5_gFit_popeye.nii.gz'),
-               func_img.affine, func_img.header)
+
+    # Save as .npy — NIfTI1 dim is 16-bit (max 32767), which fails for 100k voxels.
+    # Simulation results don't need affine/header, .npy is simpler and unlimited.
+    np.save(os.path.join(sim_fit_dir, 'RF_ss5_gFit_popeye.npy'),
+            RF_ss5_gFit[0, 0, :, :])
 
     plot_comparison(trueFit_data, RF_ss5_gFit[0, 0, :, :],
                     'Grid-fit',
@@ -302,9 +304,8 @@ def _run(args, codeStartTime, p, params):
         tstamp_finalfit = time.perf_counter()
         print_time(tstamp_gridfit, tstamp_finalfit, 'Final fit')
 
-        save2nifti(RF_ss5_fFit,
-                   os.path.join(sim_fit_dir, 'RF_ss5_fFit_popeye.nii.gz'),
-                   func_img.affine, func_img.header)
+        np.save(os.path.join(sim_fit_dir, 'RF_ss5_fFit_popeye.npy'),
+                RF_ss5_fFit[0, 0, :, :])
 
         plot_comparison(trueFit_data, RF_ss5_fFit[0, 0, :, :],
                         'Final-fit',
