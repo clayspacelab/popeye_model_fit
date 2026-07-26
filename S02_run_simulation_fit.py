@@ -121,7 +121,7 @@ def load_simulation_data(p, nvox):
 
 
 def plot_comparison(trueFit_data, fitted_data, title_prefix, save_path):
-    """Plot ground truth vs fitted parameters."""
+    """Plot ground truth vs fitted parameters (dark theme)."""
     param_names = ['theta', 'rsquared', 'rho', 'sigma', 'n', 'x', 'y', 'beta']
 
     f, axs = plt.subplots(2, 4, figsize=(20, 10))
@@ -129,15 +129,22 @@ def plot_comparison(trueFit_data, fitted_data, title_prefix, save_path):
     for i in range(8):
         ax = axs[i]
         true_vals = trueFit_data[:, i].flatten()
-        fit_vals = fitted_data[:, i].flatten()
-        ax.plot(true_vals, fit_vals, 'o', markersize=4, alpha=0.7)
-        ax.plot(ax.get_xlim(), ax.get_xlim(), 'k--')
+        fit_vals  = fitted_data[:, i].flatten()
+        ax.scatter(true_vals, fit_vals, s=12, alpha=0.6,
+                   color='#00e5ff', edgecolors='none')  # cyan dots on dark bg
+        lims = [min(ax.get_xlim()[0], ax.get_ylim()[0]),
+                max(ax.get_xlim()[1], ax.get_ylim()[1])]
+        ax.plot(lims, lims, '--', color='#ff4081', linewidth=1.2,  # magenta identity line
+                label='identity')
+        ax.set_xlim(lims)
+        ax.set_ylim(lims)
         ax.set_title(f"{title_prefix}: {param_names[i]}")
         ax.set_xlabel('Ground Truth')
         ax.set_ylabel('Fitted')
+        ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig(save_path, dpi=300)
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close(f)
     print(f"Comparison plot saved to {save_path}")
 
@@ -171,6 +178,9 @@ def main():
 
 
 def _run(args, codeStartTime, p, params):
+    # Apply dark theme globally for all figures in this run
+    set_dark_theme()
+
     # Load simulation data
     print('Loading simulated data...')
     scan_data, trueFit_data = load_simulation_data(p, args.n_voxels)
@@ -193,12 +203,14 @@ def _run(args, codeStartTime, p, params):
 
     f, axs = plt.subplots(2, 5, figsize=(20, 10))
     for i in range(min(5, nvoxs)):
-        axs[0, i].plot(scan_data_orig[i])
+        axs[0, i].plot(scan_data_orig[i], color='#ff9800', linewidth=1.2)
         axs[0, i].set_title('Original')
-        axs[1, i].plot(scan_data[i])
+        axs[0, i].grid(True, alpha=0.3)
+        axs[1, i].plot(scan_data[i], color='#00e5ff', linewidth=1.2)
         axs[1, i].set_title('Detrended')
+        axs[1, i].grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig(os.path.join(fig_dir, 'detrended_voxels.png'), dpi=300)
+    plt.savefig(os.path.join(fig_dir, 'detrended_voxels.png'), dpi=300, bbox_inches='tight')
     plt.close(f)
 
     # Set up for volumetric-style fitting (1x1xN pseudo-volume)
