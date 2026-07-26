@@ -3,7 +3,7 @@ S01_simulate_prf.py — Generate synthetic pRF data with known ground-truth para
 
 Creates simulated voxel timeseries by:
     1. Sampling random (x, y, sigma, n) parameters from the constrained grid space
-    2. Generating model predictions for each voxel
+    2. Generating model predictions for each voxel (CPU multiprocessing or GPU batch)
     3. Adding noise, linear trend, and baseline
     4. Saving the simulated data and ground-truth parameters
 
@@ -11,7 +11,8 @@ The output can be used with S02_run_simulation_fit.py to validate the pipeline.
 
 Usage:
     python S01_simulate_prf.py
-    python S01_simulate_prf.py --n-voxels 5000
+    python S01_simulate_prf.py --n-voxels 100000
+    python S01_simulate_prf.py --n-voxels 100000 --use-gpu
 """
 
 import argparse
@@ -24,6 +25,7 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 from scipy.io import savemat
 from itertools import product
@@ -39,11 +41,99 @@ from H04_grid_predict import generate_grid_prediction
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Generate synthetic pRF data')
-    parser.add_argument('--n-voxels', type=int, default=10000,
-                        help='Number of simulated voxels (default: 10000)')
+    parser.add_argument('--n-voxels', type=int, default=100000,
+                        help='Number of simulated voxels (default: 100000)')
     parser.add_argument('--grid-density', type=int, default=100,
                         help='Grid density for parameter sampling (default: 100)')
+    parser.add_argument('--use-gpu', action='store_true',
+                        help='Use GPU (CuPy) for batch prediction generation')
     return parser.parse_args()
+
+
+
+def _generate_predictions_gpu(params_vox, stimulus, sub_batch=5000):
+    """
+    Generate CSS pRF predictions for all voxels using GPU batch computation.
+
+    All N voxels' forward models are computed simultaneously per sub-batch:
+        Batch RF:    (N, H*W) computed at once (vectorized Gaussian)
+        Response:    (N, H*W) @ (H*W, T) → (N, T)  one GPU matmul
+        CSS:         (N, T) ** n  vectorized
+        HRF conv:    batch FFT on (N, nfft)
+
+    Parameters
+    ----------
+    params_vox : list of (x, y, sigma, n) tuples
+    stimulus   : VisualStimulus
+    sub_batch  : int   voxels per GPU sub-batch (default 5000)
+
+    Returns
+    -------
+    ndarray, shape (N, T)
+    """
+    try:
+        import cupy as cp
+    except ImportError:
+        raise RuntimeError("CuPy is required for GPU prediction generation. "
+                           "Install with: pip install cupy-cuda12x")
+
+    import popeye.utilities_cclab as utils_mod
+
+    nT     = stimulus.stim_arr.shape[2]
+    N      = len(params_vox)
+
+    # Transfer stimulus to GPU once
+    deg_x_flat = cp.asarray(stimulus.deg_x.ravel(), dtype=cp.float32)   # (H*W,)
+    deg_y_flat = cp.asarray(stimulus.deg_y.ravel(), dtype=cp.float32)
+    stim_flat  = cp.asarray(stimulus.stim_arr.reshape(-1, nT),
+                            dtype=cp.float32)                             # (H*W, T)
+    hrf_cpu    = utils_mod.double_gamma_hrf(0, 1.3).astype(np.float32)
+    hrf_gpu    = cp.asarray(hrf_cpu)
+    dx         = float(cp.diff(cp.asarray(stimulus.deg_x[0, 0:2]))[0])
+
+    nfft    = nT + len(hrf_cpu) - 1
+    hrf_fft = cp.fft.rfft(hrf_gpu, n=nfft)                              # (nfft//2+1,)
+
+    params_arr = np.array(params_vox, dtype=np.float32)                  # (N, 4)
+    results    = np.empty((N, nT), dtype=np.float32)
+
+    for start in tqdm(range(0, N, sub_batch), desc="GPU voxel prediction"):
+        end  = min(start + sub_batch, N)
+        batch = cp.asarray(params_arr[start:end])                         # (B, 4)
+        B    = batch.shape[0]
+
+        x     = batch[:, 0]   # (B,)
+        y     = batch[:, 1]
+        sigma = batch[:, 2]
+        n     = batch[:, 3]
+
+        # Batch 2D Gaussian RF: (B, H*W)
+        dx_diff = deg_x_flat[None, :] - x[:, None]
+        dy_diff = deg_y_flat[None, :] - y[:, None]
+        rf      = cp.exp(-(dx_diff**2 + dy_diff**2) / (2.0 * sigma[:, None]**2))
+        rf     /= (2.0 * np.pi * sigma[:, None]**2) / (dx**2)
+
+        # Neural response: (B, H*W) @ (H*W, T) → (B, T)
+        response = rf @ stim_flat
+
+        # CSS compressive nonlinearity
+        response = cp.abs(response) ** n[:, None]
+
+        # Batch HRF convolution via FFT
+        R_fft = cp.fft.rfft(response, n=nfft)
+        pred  = cp.fft.irfft(R_fft * hrf_fft[None, :])[:, :nT]
+
+        # Normalize to percent signal change
+        mu   = pred.mean(axis=1, keepdims=True)
+        pred = (pred - mu) / (cp.abs(mu) + 1e-8)
+
+        results[start:end] = cp.asnumpy(pred)
+
+    # Free GPU memory
+    del deg_x_flat, deg_y_flat, stim_flat, hrf_gpu, hrf_fft
+    cp.get_default_memory_pool().free_all_blocks()
+
+    return results
 
 
 def main():
@@ -95,16 +185,20 @@ def main():
     params_vox = random.sample(params_space, min(nvoxs, len(params_space)))
     baseline_vox = np.random.uniform(0, 10000, len(params_vox))
 
-    # Generate predictions
-    print(f"Generating predictions for {len(params_vox)} simulated voxels...")
-    from multiprocessing import Pool, cpu_count
-    with Pool(cpu_count()) as pool:
-        results = pool.map(
-            generate_grid_prediction,
-            [(x, y, s, n, stimulus) for x, y, s, n in params_vox]
-        )
+    # Generate predictions — CPU multiprocessing or GPU batch
+    print(f"Generating predictions for {len(params_vox)} simulated voxels "
+          f"({'GPU' if args.use_gpu else 'CPU'})...")
 
-    results = np.array(results)
+    if args.use_gpu:
+        results = _generate_predictions_gpu(params_vox, stimulus)
+    else:
+        from multiprocessing import Pool, cpu_count
+        with Pool(cpu_count()) as pool:
+            results = pool.map(
+                generate_grid_prediction,
+                [(x, y, s, n, stimulus) for x, y, s, n in params_vox]
+            )
+        results = np.array(results)
 
     # Add noise + linear trend + baseline
     results = (results
