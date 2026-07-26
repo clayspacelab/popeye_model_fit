@@ -171,10 +171,6 @@ def get_final_estims(gFit, param_width, timeseries_data, stimulus, fFit, indices
             results.append(result)
 
     for i, result in enumerate(results):
-        idx = indices[i]
-        if isinstance(idx, (list, tuple)):
-            fFit[idx[0], idx[1], idx[2], :] = result  # volumetric
-        else:
-            fFit[idx, :] = result  # surface
+        fFit[i, :] = result  # fFit is 2D (nvoxs, 9) here
 
     return fFit
