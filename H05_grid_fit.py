@@ -7,10 +7,12 @@ via OLS regression.
 
 Supports both CPU (default, multiprocessing) and GPU (optional, CuPy) paths.
 
+CPU path uses fully vectorized OLS across all grid points at once per voxel
+(single numpy matmul instead of a Python loop), which saturates each worker core.
+
 Key functions:
     overload_estimate()  — OLS regression to get beta, baseline, R²
-    compute_rmse()       — RMSE between data and one grid prediction
-    process_voxel()      — Find best grid match for one voxel/vertex
+    process_voxel()      — Find best grid match for one voxel/vertex (vectorized)
     get_grid_estims()    — Parallel grid fitting across all voxels/vertices
 """
 
@@ -20,6 +22,19 @@ from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
 
 import popeye.utilities_cclab as utils
+
+# Module-level globals populated by the Pool worker initializer
+_G_centered = None
+_S_xx = None
+_grid_space = None
+
+
+def _worker_init(G_centered, S_xx, grid_space):
+    """Initializer for each Pool worker: store shared arrays as globals."""
+    global _G_centered, _S_xx, _grid_space
+    _G_centered = G_centered
+    _S_xx = S_xx
+    _grid_space = grid_space
 
 
 # ---------------------------------------------------------------------------
@@ -65,64 +80,51 @@ def overload_estimate(estimate, data, prediction, use_gpu=False):
             estimate[0], estimate[1], betas[1], betas[0])
 
 
-def compute_rmse(args):
-    """
-    Compute RMSE between observed data and a grid prediction via OLS.
-
-    Parameters
-    ----------
-    args : tuple
-        (data, predictor_series, use_gpu)
-
-    Returns
-    -------
-    float
-        Mean squared error.
-    """
-    data, predictor_series, use_gpu = args
-
-    if use_gpu:
-        return _compute_rmse_gpu(data, predictor_series)
-
-    predictor_series = predictor_series.reshape(-1, 1)
-    X = np.hstack((np.ones((predictor_series.shape[0], 1)), predictor_series))
-    XtX = np.dot(X.T, X)
-    XtX_inv = np.linalg.inv(XtX)
-    XtX_inv_Xt = np.dot(XtX_inv, X.T)
-    betas = np.dot(XtX_inv_Xt, data)
-    predictions = np.dot(X, betas)
-    rmse = np.mean((data - predictions)**2)
-    return rmse
-
-
-def process_voxel(args):
+def process_voxel(y):
     """
     Find the best-matching grid prediction for a single voxel/vertex.
 
+    Uses fully vectorized OLS across all grid points at once:
+      - Centers the voxel timeseries
+      - Computes S_xy = G_centered @ y_centered  in one matmul  (G,)
+      - Derives OLS slope beta1 = S_xy / S_xx and SSE analytically
+      - Masks negative-slope fits (invalid pRF response) before argmin
+    This replaces the old serial Python loop over 77k grid points.
+
+    G_centered, S_xx, and grid_space are set once per worker via the Pool
+    initializer (_worker_init), so they are NOT pickled with every task.
+
     Parameters
     ----------
-    args : tuple
-        (timeseries_data, grid_preds, grid_space, use_gpu)
+    y : ndarray (T,)
+        Observed timeseries for this voxel.
 
     Returns
     -------
     tuple of 9 floats
         Overload estimate for this voxel/vertex.
     """
-    timeseries_data, grid_preds, grid_space, use_gpu = args
-    ngrids = len(grid_preds)
+    G_centered = _G_centered
+    S_xx = _S_xx
+    grid_space = _grid_space
 
-    rmse_args = [(timeseries_data, grid_preds[j], use_gpu) for j in range(ngrids)]
-    rmses = np.array([compute_rmse(arg) for arg in rmse_args])
+    # Center the voxel timeseries
+    y_c = y - y.mean()                     # (T,)
+    S_yy = float(y_c @ y_c)               # scalar
 
-    best_grid_idx = np.argmin(rmses)
+    # Vectorized OLS across all G grid points in one matmul
+    S_xy = G_centered @ y_c               # (G,)  — the hot path
+    betas1 = S_xy / S_xx                  # (G,)  OLS slope
+    sse = S_yy - betas1 * S_xy            # (G,)  SSE
+
+    # Mask invalid fits: negative slope = pRF predicts wrong sign
+    sse[betas1 < 0] = np.inf
+
+    best_grid_idx = int(np.argmin(sse))
     best_grid_estim = grid_space[best_grid_idx]
-    best_grid_pred = grid_preds[best_grid_idx]
+    best_grid_pred = G_centered[best_grid_idx]  # centered pred is fine for OLS
 
-    overload_estim = overload_estimate(
-        best_grid_estim, timeseries_data, best_grid_pred, use_gpu
-    )
-    return overload_estim
+    return overload_estimate(best_grid_estim, y, best_grid_pred)
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +135,11 @@ def get_grid_estims(grid_preds, grid_space, timeseries_data, gFit, indices,
                     use_gpu=False, batch_size=2000):
     """
     Find the best grid match for all voxels/vertices.
+
+    CPU path precomputes centered grid statistics once, then dispatches
+    one vectorized worker task per voxel. Each worker does a single matmul
+    across all G grid points instead of a Python loop, fully saturating
+    its assigned CPU core.
 
     Parameters
     ----------
@@ -170,18 +177,33 @@ def get_grid_estims(grid_preds, grid_space, timeseries_data, gFit, indices,
         except ImportError:
             print("CuPy not available. Falling back to CPU implementation.")
 
-    # --- CPU path: shared memory + multiprocessing ---
-    timeseries_data = utils.generate_shared_array(timeseries_data, ctypes.c_double)
-    grid_preds = utils.generate_shared_array(grid_preds, ctypes.c_double)
+    # --- CPU path: vectorized OLS across all grid points per voxel ---
+    # Precompute centered grid stats once — injected into each worker via initializer
+    # so the ~62MB G_centered array is NOT pickled with every voxel task.
+    grid_preds = np.asarray(grid_preds, dtype=np.float32)
+    G_means = grid_preds.mean(axis=1, keepdims=True)   # (G, 1)
+    G_centered = grid_preds - G_means                  # (G, T)
+    S_xx = (G_centered ** 2).sum(axis=1)               # (G,)
+    S_xx[S_xx == 0] = 1e-8                             # guard flat predictions
 
-    args = [(timeseries_data[iin, :], grid_preds, grid_space, False)
-            for iin in range(nvoxs)]
+    timeseries_data = np.asarray(timeseries_data, dtype=np.float32)
 
-    with Pool(cpu_count()) as pool:
-        results = []
-        for result in tqdm(pool.imap(process_voxel, args),
-                           total=nvoxs, dynamic_ncols=False):
-            results.append(result)
+    # Each task is just the voxel timeseries (201 floats, ~800 bytes)
+    voxel_args = [timeseries_data[iin] for iin in range(nvoxs)]
+
+    # chunksize: amortize IPC overhead across multiple voxels per round-trip
+    n_workers = cpu_count()
+    chunksize = max(1, nvoxs // (n_workers * 4))
+
+    with Pool(
+        n_workers,
+        initializer=_worker_init,
+        initargs=(G_centered, S_xx, grid_space)
+    ) as pool:
+        results = list(tqdm(
+            pool.imap(process_voxel, voxel_args, chunksize=chunksize),
+            total=nvoxs, dynamic_ncols=True
+        ))
 
     for i, result in enumerate(results):
         idx = indices[i]
