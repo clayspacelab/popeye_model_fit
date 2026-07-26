@@ -75,8 +75,8 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description='Run pRF fitting on simulated data and evaluate accuracy'
     )
-    parser.add_argument('--n-voxels', type=int, default=25,
-                        help='Number of voxels to test (default: 25)')
+    parser.add_argument('--n-voxels', type=int, default=None,
+                        help='Number of voxels to test (default: all simulated voxels)')
     parser.add_argument('--grid-size', type=int, default=GRID_DEFAULTS['Ns'],
                         help=f'Grid density Ns (default: {GRID_DEFAULTS["Ns"]})')
     parser.add_argument('--use-gpu', action='store_true',
@@ -112,9 +112,10 @@ def load_simulation_data(p, nvox):
     trueFit_data[:, 7] = np.zeros(trueFit_estims.shape[0])
     trueFit_data[:, 8] = baseline_vox
 
-    # Trim to requested number of voxels
-    scan_data = scan_data[:nvox, :]
-    trueFit_data = trueFit_data[:nvox, :]
+    # Trim to requested number of voxels (or use all if nvox is None)
+    if nvox is not None:
+        scan_data = scan_data[:nvox, :]
+        trueFit_data = trueFit_data[:nvox, :]
 
     return scan_data, trueFit_data
 
@@ -166,14 +167,6 @@ def main():
 
 
 def _run(args, codeStartTime):
-    """Main pipeline logic (called from main() inside try/finally for logging)."""
-    print(f'=== Simulation Validation Pipeline ===')
-    print(f'Run started: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
-    print(f'N voxels:  {args.n_voxels}')
-    print(f'Grid size: {args.grid_size}')
-    print(f'GPU:       {"enabled" if args.use_gpu else "disabled"}')
-    print()
-
     # Set paths (use a dummy subject for stimulus paths)
     params = dict(DEFAULT_PARAMS)
     params['subjID'] = 'JC'
@@ -183,6 +176,13 @@ def _run(args, codeStartTime):
     print('Loading simulated data...')
     scan_data, trueFit_data = load_simulation_data(p, args.n_voxels)
     nvoxs = scan_data.shape[0]
+
+    print(f'=== Simulation Validation Pipeline ===')
+    print(f'Run started: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
+    print(f'N voxels:  {nvoxs}')
+    print(f'Grid size: {args.grid_size}')
+    print(f'GPU:       {"enabled" if args.use_gpu else "disabled"}')
+    print()
 
     # Detrend
     scan_data_orig = scan_data.copy()
