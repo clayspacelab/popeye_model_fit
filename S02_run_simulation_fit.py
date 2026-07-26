@@ -17,7 +17,10 @@ import argparse
 import ctypes
 import time
 import os
+import sys
 import pickle
+import traceback
+from datetime import datetime
 
 import numpy as np
 import matplotlib
@@ -36,6 +39,36 @@ from H03_fit_utils import print_time, remove_trend, constraint_grids, set_dark_t
 from H04_grid_predict import getGridPreds
 from H05_grid_fit import get_grid_estims
 from H06_final_fit import get_final_estims
+
+
+class TeeLogger:
+    """
+    Duplicates all writes to sys.stdout (and optionally sys.stderr) to a log file.
+    Usage:
+        logger = TeeLogger(log_path)
+        sys.stdout = logger
+        ...  # all print() calls go to both console and file
+        logger.close()
+    """
+
+    def __init__(self, log_path):
+        self._terminal = sys.__stdout__
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        self._log = open(log_path, 'w', buffering=1)  # line-buffered
+        self.log_path = log_path
+
+    def write(self, message):
+        self._terminal.write(message)
+        self._log.write(message)
+
+    def flush(self):
+        self._terminal.flush()
+        self._log.flush()
+
+    def close(self):
+        sys.stdout = self._terminal
+        sys.stderr = sys.__stderr__
+        self._log.close()
 
 
 def parse_args():
@@ -112,7 +145,30 @@ def main():
     args = parse_args()
     codeStartTime = time.perf_counter()
 
+    # ── Logging setup ──────────────────────────────────────────────────────────
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    log_dir = os.path.join(script_dir, 'logs', 'S02')
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_path = os.path.join(log_dir, f'S02_{timestamp}.log')
+    logger = TeeLogger(log_path)
+    sys.stdout = logger
+    sys.stderr = logger  # capture tracebacks too
+    # ───────────────────────────────────────────────────────────────────────────
+
+    try:
+        _run(args, codeStartTime)
+    except Exception:
+        traceback.print_exc()  # goes to log via stderr redirect
+        raise
+    finally:
+        print(f'\nLog saved to: {log_path}')
+        logger.close()
+
+
+def _run(args, codeStartTime):
+    """Main pipeline logic (called from main() inside try/finally for logging)."""
     print(f'=== Simulation Validation Pipeline ===')
+    print(f'Run started: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
     print(f'N voxels:  {args.n_voxels}')
     print(f'Grid size: {args.grid_size}')
     print(f'GPU:       {"enabled" if args.use_gpu else "disabled"}')
@@ -231,6 +287,7 @@ def main():
         RF_ss5_fFit = get_final_estims(RF_ss5_gFit, param_width, timeseries_data,
                                         stimulus, RF_ss5_fFit, indices,
                                         use_gpu=args.use_gpu)
+        RF_ss5_fFit = RF_ss5_fFit.reshape(1, 1, nvoxs, 9)  # restore 4D shape
         tstamp_finalfit = time.perf_counter()
         print_time(tstamp_gridfit, tstamp_finalfit, 'Final fit')
 
