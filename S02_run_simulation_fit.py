@@ -146,9 +146,13 @@ def main():
     args = parse_args()
     codeStartTime = time.perf_counter()
 
+    # Resolve paths first so log lands next to simulation results
+    params = dict(DEFAULT_PARAMS)
+    params['subjID'] = 'JC'
+    p, _ = set_paths(params['subjID'], data_format='volumetric')
+
     # ── Logging setup ──────────────────────────────────────────────────────────
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    log_dir = os.path.join(script_dir, 'logs', 'S02')
+    log_dir = os.path.join(p['pRF_data'], 'Simulation', 'logs')
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     log_path = os.path.join(log_dir, f'S02_{timestamp}.log')
     logger = TeeLogger(log_path)
@@ -157,7 +161,7 @@ def main():
     # ───────────────────────────────────────────────────────────────────────────
 
     try:
-        _run(args, codeStartTime)
+        _run(args, codeStartTime, p, params)
     except Exception:
         traceback.print_exc()  # goes to log via stderr redirect
         raise
@@ -166,12 +170,7 @@ def main():
         logger.close()
 
 
-def _run(args, codeStartTime):
-    # Set paths (use a dummy subject for stimulus paths)
-    params = dict(DEFAULT_PARAMS)
-    params['subjID'] = 'JC'
-    p, _ = set_paths(params['subjID'], data_format='volumetric')
-
+def _run(args, codeStartTime, p, params):
     # Load simulation data
     print('Loading simulated data...')
     scan_data, trueFit_data = load_simulation_data(p, args.n_voxels)
