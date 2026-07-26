@@ -25,7 +25,7 @@ DEFAULT_PARAMS = {
 
 # Grid search defaults
 GRID_DEFAULTS = {
-    'Ns': 35,                 # grid density
+    'Ns': 100,                # grid density
     'n_grid_values': [0.25, 0.5, 0.75, 1.0],  # CSS exponent grid
 }
 
