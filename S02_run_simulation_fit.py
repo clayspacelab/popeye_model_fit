@@ -33,7 +33,7 @@ from itertools import product
 import popeye.utilities_cclab as utils
 from popeye.visual_stimulus import VisualStimulus
 
-from H01_config import DEFAULT_PARAMS, GRID_DEFAULTS, set_paths
+from H01_config import DEFAULT_PARAMS, GRID_DEFAULTS, set_paths, get_gridfit_path
 from H02_dataloader import load_stimuli, save2nifti
 from H03_fit_utils import print_time, remove_trend, constraint_grids, set_dark_theme
 from H04_grid_predict import getGridPreds
@@ -261,12 +261,12 @@ def _run(args, codeStartTime, p, params):
 
     # Grid predictions
     tstamp_start = time.perf_counter()
-    gridfit_path = p['gridfit_path']
+    gridfit_path = get_gridfit_path(p, Ns)
     if os.path.exists(gridfit_path):
-        print("Loading grid predictions from disk")
+        print(f"Loading grid predictions from disk ({gridfit_path})")
         grid_preds = np.load(gridfit_path)
     else:
-        print("Generating grid predictions...")
+        print(f"Generating grid predictions ({gridfit_path})...")
         grid_preds = getGridPreds(grid_space, stimulus, gridfit_path,
                                   timeseries_data.shape[1])
     tstamp_gridpred = time.perf_counter()
@@ -284,14 +284,13 @@ def _run(args, codeStartTime, p, params):
     sim_fit_dir = os.path.join(p['pRF_data'], 'Simulation', 'popeyeFit')
     os.makedirs(sim_fit_dir, exist_ok=True)
 
-    # Save as .npy — NIfTI1 dim is 16-bit (max 32767), which fails for 100k voxels.
-    # Simulation results don't need affine/header, .npy is simpler and unlimited.
-    np.save(os.path.join(sim_fit_dir, 'RF_ss5_gFit_popeye.npy'),
-            RF_ss5_gFit[0, 0, :, :])
+    gfit_save_path = os.path.join(sim_fit_dir, f'RF_ss5_gFit_popeye_Ns{Ns}.npy')
+    np.save(gfit_save_path, RF_ss5_gFit[0, 0, :, :])
+    print(f"Grid-fit estimates saved to {gfit_save_path}")
 
     plot_comparison(trueFit_data, RF_ss5_gFit[0, 0, :, :],
-                    'Grid-fit',
-                    os.path.join(fig_dir, 'gridfit_comparison.png'))
+                    f'Grid-fit (Ns={Ns})',
+                    os.path.join(fig_dir, f'gridfit_comparison_Ns{Ns}.png'))
 
     # Final fit (optional)
     if not args.skip_final_fit:
@@ -304,12 +303,13 @@ def _run(args, codeStartTime, p, params):
         tstamp_finalfit = time.perf_counter()
         print_time(tstamp_gridfit, tstamp_finalfit, 'Final fit')
 
-        np.save(os.path.join(sim_fit_dir, 'RF_ss5_fFit_popeye.npy'),
-                RF_ss5_fFit[0, 0, :, :])
+        ffit_save_path = os.path.join(sim_fit_dir, f'RF_ss5_fFit_popeye_Ns{Ns}.npy')
+        np.save(ffit_save_path, RF_ss5_fFit[0, 0, :, :])
+        print(f"Final-fit estimates saved to {ffit_save_path}")
 
         plot_comparison(trueFit_data, RF_ss5_fFit[0, 0, :, :],
-                        'Final-fit',
-                        os.path.join(fig_dir, 'finalfit_comparison.png'))
+                        f'Final-fit (Ns={Ns})',
+                        os.path.join(fig_dir, f'finalfit_comparison_Ns{Ns}.png'))
 
     codeEndTime = time.perf_counter()
     print_time(codeStartTime, codeEndTime, 'Total simulation validation')

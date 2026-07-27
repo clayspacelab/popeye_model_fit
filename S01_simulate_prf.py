@@ -33,7 +33,7 @@ from itertools import product
 import popeye.utilities_cclab as utils
 from popeye.visual_stimulus import VisualStimulus
 
-from H01_config import DEFAULT_PARAMS, set_paths
+from H01_config import DEFAULT_PARAMS, GRID_DEFAULTS, set_paths
 from H02_dataloader import load_stimuli
 from H03_fit_utils import constraint_grids, set_dark_theme
 from H04_grid_predict import generate_grid_prediction
@@ -43,8 +43,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Generate synthetic pRF data')
     parser.add_argument('--n-voxels', type=int, default=100000,
                         help='Number of simulated voxels (default: 100000)')
-    parser.add_argument('--grid-density', type=int, default=100,
-                        help='Grid density for parameter sampling (default: 100)')
+    parser.add_argument('--grid-density', type=int, default=GRID_DEFAULTS['Ns'],
+                        help=f'Grid density for parameter sampling (default: {GRID_DEFAULTS["Ns"]})')
     parser.add_argument('--use-gpu', action='store_true',
                         help='Use GPU (CuPy) for batch prediction generation')
     return parser.parse_args()

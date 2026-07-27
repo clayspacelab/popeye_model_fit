@@ -25,9 +25,15 @@ DEFAULT_PARAMS = {
 
 # Grid search defaults
 GRID_DEFAULTS = {
-    'Ns': 100,                # grid density
+    'Ns': 50,                 # grid density
     'n_grid_values': [0.25, 0.5, 0.75, 1.0],  # CSS exponent grid
 }
+
+def get_gridfit_path(p, Ns=None):
+    """Return the cached grid prediction path formatted with Ns."""
+    if Ns is None:
+        Ns = GRID_DEFAULTS['Ns']
+    return os.path.join(p['stimuli_path'], f'gridfit_{Ns}.npy')
 
 # CSS model output field names (9-element tuple per voxel/vertex)
 CSS_FIELD_NAMES = (
@@ -109,7 +115,7 @@ def set_paths(subjID, data_format='volumetric'):
 
     # --- Stimuli paths (shared) ---
     p['stimuli_path'] = os.path.join(p['pRF_data'], 'Stimuli')
-    p['gridfit_path'] = os.path.join(p['stimuli_path'], 'gridfit.npy')
+    p['gridfit_path'] = get_gridfit_path(p)
 
     # --- Data-format-specific paths ---
     if data_format == 'volumetric':
