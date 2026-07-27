@@ -119,8 +119,9 @@ Outputs:
 * Figures + metrics → `Simulation/figures/S03/`:
   * `accuracy_vs_Ns.png` — Pearson correlation (fitted vs ground truth) vs Ns, one panel per parameter (`theta, rho, sigma, n, x, y`), grid & final fit.
   * `r2_vs_Ns.png` — mean fitted R² as a function of Ns.
+  * `r2_by_tfsp_bin_vs_Ns.png` — mean R² vs Ns with voxels split into 10 TFSP (SNR) deciles (see `D01`'s `compute_tfsp`), one line per decile colored low→high SNR; grid and final fit panels. Shows how SNR gates recoverable R² and how that interacts with grid density.
   * `runtime_vs_Ns.png` — grid-fit / final-fit wall-clock time and constrained grid-point count vs Ns.
-  * `sweep_metrics.npz` — raw metrics for all Ns.
+  * `sweep_metrics.npz` — raw metrics for all Ns (incl. `tfsp_bin_medians`, `grid_r2_by_bin`, `final_r2_by_bin`).
 * Grid-prediction caches → `Stimuli/gridestims/gridfit_Ns{Ns}_n{n_res}.npy`.
 
 ---

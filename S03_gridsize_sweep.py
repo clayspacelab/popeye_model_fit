@@ -32,6 +32,8 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from matplotlib.cm import ScalarMappable
+from matplotlib.colors import Normalize
 import nibabel as nib
 
 from itertools import product
@@ -46,6 +48,7 @@ from H03_fit_utils import print_time, remove_trend, constraint_grids, set_dark_t
 from H04_grid_predict import getGridPreds
 from H05_grid_fit import get_grid_estims
 from H06_final_fit import get_final_estims
+from D01_analyze_snr import compute_tfsp
 
 # Reuse S02's simulation loader and tee logger to avoid duplication.
 from S02_run_simulation_fit import TeeLogger, load_simulation_data
@@ -53,6 +56,12 @@ from S02_run_simulation_fit import TeeLogger, load_simulation_data
 
 # Finer CSS exponent grid for the sweep (10 values vs the default 4).
 N_GRID_VALUES = np.round(np.linspace(0.25, 1.0, 10), 4).tolist()
+
+# Number of TFSP (SNR) bins for the R²-vs-Ns-by-SNR figure.
+N_TFSP_BINS = 10
+
+# TFSP task-band period (seconds); matches S02.
+TFSP_SWEEP_PERIOD_S = 25.0
 
 # Parameters plotted as identity scatters in S02 (i.e. those with a meaningful
 # ground truth to correlate against). Index into the 9-element CSS estimate.
@@ -157,6 +166,35 @@ def compute_metrics(trueFit_data, fitted_data):
     return corr, mean_r2
 
 
+def compute_tfsp_bins(tfsp, n_bins):
+    """Assign voxels to quantile (decile) TFSP bins.
+
+    Quantile bins give ~equal voxel counts per bin and are robust to the skewed
+    TFSP distribution. Returns (bin_labels (N,) in [0, n_bins-1], bin_medians
+    (n_bins,) median TFSP per bin; NaN for any empty bin).
+    """
+    tfsp = np.asarray(tfsp).flatten()
+    edges = np.quantile(tfsp, np.linspace(0, 1, n_bins + 1))
+    # Interior edges only → digitize yields labels 0..n_bins-1.
+    bin_labels = np.clip(np.digitize(tfsp, edges[1:-1]), 0, n_bins - 1)
+    bin_medians = np.array([
+        np.median(tfsp[bin_labels == b]) if np.any(bin_labels == b) else np.nan
+        for b in range(n_bins)
+    ])
+    return bin_labels, bin_medians
+
+
+def compute_r2_by_bin(r2_vals, bin_labels, n_bins):
+    """Mean R² within each TFSP bin: (n_bins,), NaN for empty bins."""
+    r2_vals = np.asarray(r2_vals).flatten()
+    out = np.full(n_bins, np.nan)
+    for b in range(n_bins):
+        mask = (bin_labels == b) & np.isfinite(r2_vals)
+        if mask.any():
+            out[b] = float(np.mean(r2_vals[mask]))
+    return out
+
+
 def prepare_gridpreds(Ns, stimulus, p, nTRs):
     """CPU stage: build the grid space and load-or-generate its grid predictions.
 
@@ -183,11 +221,13 @@ def prepare_gridpreds(Ns, stimulus, p, nTRs):
 
 def fit_from_preds(Ns, grid_space, param_width, grid_preds, prep_time,
                    stimulus, timeseries_data, indices, nvoxs, use_gpu,
-                   skip_final_fit, fit_dir, n_iter=300, lr=0.005, sub_batch=None):
+                   skip_final_fit, fit_dir, bin_labels, n_bins,
+                   n_iter=300, lr=0.005, sub_batch=None):
     """GPU stage: grid fit (+ optional final fit) from precomputed predictions.
 
     Runs on the main thread so all CuPy work stays on a single device context.
     Grid- and final-fit estimates are saved to ``fit_dir`` (the S03 subfolder).
+    ``bin_labels`` assigns each voxel to a TFSP bin so per-bin mean R² is recorded.
     """
     print(f'\n{"="*70}\n=== Ns = {Ns} ===\n{"="*70}')
 
@@ -214,7 +254,10 @@ def fit_from_preds(Ns, grid_space, param_width, grid_preds, prep_time,
     print(f'[Ns={Ns}] Grid-fit estimates saved to {gfit_save_path}')
 
     grid_corr, grid_r2 = compute_metrics(trueFit_data_global, RF_gFit[0, 0, :, :])
-    result['grid'] = {'corr': grid_corr, 'mean_r2': grid_r2}
+    result['grid'] = {
+        'corr': grid_corr, 'mean_r2': grid_r2,
+        'r2_by_bin': compute_r2_by_bin(RF_gFit[0, 0, :, 1], bin_labels, n_bins),
+    }
 
     # Final fit (optional).
     if not skip_final_fit:
@@ -233,7 +276,10 @@ def fit_from_preds(Ns, grid_space, param_width, grid_preds, prep_time,
         print(f'[Ns={Ns}] Final-fit estimates saved to {ffit_save_path}')
 
         final_corr, final_r2 = compute_metrics(trueFit_data_global, RF_fFit[0, 0, :, :])
-        result['final'] = {'corr': final_corr, 'mean_r2': final_r2}
+        result['final'] = {
+            'corr': final_corr, 'mean_r2': final_r2,
+            'r2_by_bin': compute_r2_by_bin(RF_fFit[0, 0, :, 1], bin_labels, n_bins),
+        }
     else:
         result['final_fit_time'] = np.nan
 
@@ -241,7 +287,7 @@ def fit_from_preds(Ns, grid_space, param_width, grid_preds, prep_time,
 
 
 def build_results_from_saved(grid_sizes, fit_dir, stimulus, trueFit_data,
-                             skip_final_fit):
+                             skip_final_fit, bin_labels, n_bins):
     """Reconstruct sweep results from previously saved grid/final fit .npy files.
 
     Used by --plot-only when a run was interrupted before the in-memory plotting
@@ -281,14 +327,16 @@ def build_results_from_saved(grid_sizes, fit_dir, stimulus, trueFit_data,
             'grid_prep_time': np.nan,
             'grid_fit_time': np.nan,
             'final_fit_time': np.nan,
-            'grid': {'corr': gc, 'mean_r2': gr2},
+            'grid': {'corr': gc, 'mean_r2': gr2,
+                     'r2_by_bin': compute_r2_by_bin(gfit[:n, 1], bin_labels[:n], n_bins)},
             'final': None,
         }
         if use_final:
             ffit = np.load(fpath(Ns))
             m = min(len(trueFit_data), len(ffit))
             fc, fr2 = compute_metrics(trueFit_data[:m], ffit[:m])
-            res['final'] = {'corr': fc, 'mean_r2': fr2}
+            res['final'] = {'corr': fc, 'mean_r2': fr2,
+                            'r2_by_bin': compute_r2_by_bin(ffit[:m, 1], bin_labels[:m], n_bins)}
         results.append(res)
         print(f'[plot-only] Ns={Ns}: loaded ({"grid+final" if use_final else "grid"})')
 
@@ -346,6 +394,52 @@ def plot_r2_vs_ns(results, save_path, skip_final_fit):
     print(f'R²-vs-Ns plot saved to {save_path}')
 
 
+def plot_r2_by_tfsp_bin(results, save_path, skip_final_fit, bin_medians, n_bins):
+    """Mean R² vs Ns, one line per TFSP (SNR) decile, colored by TFSP.
+
+    Left panel: grid fit. Right panel: final fit (omitted if skipped). Each line
+    is a fixed set of voxels (binned by TFSP once), so the spread shows how SNR
+    gates recoverable R² and how that interacts with grid density.
+    """
+    Ns_vals = [r['Ns'] for r in results]
+
+    stages = [('grid', 'Grid-fit')]
+    if not skip_final_fit:
+        stages.append(('final', 'Final-fit'))
+
+    f, axs = plt.subplots(1, len(stages), figsize=(9 * len(stages), 6),
+                          squeeze=False)
+    axs = axs[0]
+
+    finite = np.isfinite(bin_medians)
+    vmin = float(np.nanmin(bin_medians)) if finite.any() else 0.0
+    vmax = float(np.nanmax(bin_medians)) if finite.any() else 1.0
+    norm = Normalize(vmin=vmin, vmax=vmax if vmax > vmin else vmin + 1e-6)
+    cmap = plt.cm.viridis
+
+    for ax, (key, label) in zip(axs, stages):
+        for b in range(n_bins):
+            if not np.isfinite(bin_medians[b]):
+                continue
+            y = [r[key]['r2_by_bin'][b] for r in results]
+            ax.plot(Ns_vals, y, '-o', markersize=4, linewidth=1.4,
+                    color=cmap(norm(bin_medians[b])))
+        ax.set_title(f'{label}: mean R² by TFSP decile vs Ns')
+        ax.set_xlabel('Grid size (Ns)')
+        ax.set_ylabel('Mean R²')
+        ax.grid(True, alpha=0.3)
+
+    sm = ScalarMappable(norm=norm, cmap=cmap)
+    sm.set_array([])
+    cbar = f.colorbar(sm, ax=list(axs), fraction=0.046, pad=0.04)
+    cbar.set_label('TFSP (bin median, low → high SNR)')
+
+    f.suptitle(f'R² by TFSP (SNR) decile vs grid size ({n_bins} bins)', fontsize=15)
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close(f)
+    print(f'R²-by-TFSP-bin plot saved to {save_path}')
+
+
 def plot_runtime_vs_ns(results, save_path, skip_final_fit):
     """Grid-fit (and final-fit) wall-clock time vs Ns, plus grid-point count."""
     Ns_vals = [r['Ns'] for r in results]
@@ -378,7 +472,7 @@ def plot_runtime_vs_ns(results, save_path, skip_final_fit):
     print(f'Runtime-vs-Ns plot saved to {save_path}')
 
 
-def save_metrics(results, save_path, skip_final_fit):
+def save_metrics(results, save_path, skip_final_fit, bin_medians):
     """Persist the sweep metrics as a .npz for downstream inspection."""
     Ns_vals = np.array([r['Ns'] for r in results])
     payload = {
@@ -389,6 +483,9 @@ def save_metrics(results, save_path, skip_final_fit):
         'final_fit_time': np.array([r['final_fit_time'] for r in results]),
         'grid_mean_r2': np.array([r['grid']['mean_r2'] for r in results]),
         'n_grid_values': np.array(N_GRID_VALUES),
+        # TFSP-binned R²: rows = Ns, cols = TFSP decile (bin_medians labels cols).
+        'tfsp_bin_medians': np.asarray(bin_medians),
+        'grid_r2_by_bin': np.array([r['grid']['r2_by_bin'] for r in results]),
     }
     for name, _ in CORR_PARAMS:
         payload[f'grid_corr_{name}'] = np.array([r['grid']['corr'][name] for r in results])
@@ -396,6 +493,7 @@ def save_metrics(results, save_path, skip_final_fit):
             payload[f'final_corr_{name}'] = np.array([r['final']['corr'][name] for r in results])
     if not skip_final_fit:
         payload['final_mean_r2'] = np.array([r['final']['mean_r2'] for r in results])
+        payload['final_r2_by_bin'] = np.array([r['final']['r2_by_bin'] for r in results])
 
     np.savez(save_path, **payload)
     print(f'Sweep metrics saved to {save_path}')
@@ -477,6 +575,13 @@ def _run(args, codeStartTime, p, params):
         params['dtype'],
     )
 
+    # TFSP (SNR) per voxel, computed once from the detrended data (independent of
+    # Ns). Voxels are binned by TFSP decile so R² can be tracked per SNR bin.
+    print('Computing TFSP (SNR) per voxel and assigning TFSP bins...')
+    tfsp, _, _, _ = compute_tfsp(timeseries_data, tr=params['tr_length'],
+                                 sweep_period_s=TFSP_SWEEP_PERIOD_S)
+    bin_labels, bin_medians = compute_tfsp_bins(tfsp, N_TFSP_BINS)
+
     # All S03 outputs live under dedicated S03 subfolders of the usual dirs.
     fit_dir = os.path.join(p['pRF_data'], 'Simulation', 'popeyeFit', 'S03')
     os.makedirs(fit_dir, exist_ok=True)
@@ -489,7 +594,8 @@ def _run(args, codeStartTime, p, params):
     if args.plot_only:
         # Rebuild results from previously saved fits — no fitting.
         results, effective_skip = build_results_from_saved(
-            grid_sizes, fit_dir, stimulus, trueFit_data, args.skip_final_fit)
+            grid_sizes, fit_dir, stimulus, trueFit_data, args.skip_final_fit,
+            bin_labels, N_TFSP_BINS)
         if not results:
             print('[plot-only] No saved fits found for the requested Ns — nothing to plot.')
             return
@@ -510,6 +616,7 @@ def _run(args, codeStartTime, p, params):
                     fit_from_preds(Ns, grid_space, param_width, grid_preds, prep_time,
                                    stimulus, timeseries_data, indices, nvoxs,
                                    args.use_gpu, args.skip_final_fit, fit_dir,
+                                   bin_labels, N_TFSP_BINS,
                                    n_iter=args.n_iter, lr=args.lr, sub_batch=args.sub_batch)
                 )
         else:
@@ -526,6 +633,7 @@ def _run(args, codeStartTime, p, params):
                         fit_from_preds(Ns, grid_space, param_width, grid_preds, prep_time,
                                        stimulus, timeseries_data, indices, nvoxs,
                                        args.use_gpu, args.skip_final_fit, fit_dir,
+                                       bin_labels, N_TFSP_BINS,
                                        n_iter=args.n_iter, lr=args.lr, sub_batch=args.sub_batch)
                     )
 
@@ -533,13 +641,15 @@ def _run(args, codeStartTime, p, params):
                         effective_skip)
     plot_r2_vs_ns(results, os.path.join(fig_dir, 'r2_vs_Ns.png'),
                   effective_skip)
+    plot_r2_by_tfsp_bin(results, os.path.join(fig_dir, 'r2_by_tfsp_bin_vs_Ns.png'),
+                        effective_skip, bin_medians, N_TFSP_BINS)
     if args.plot_only:
         print('[plot-only] Runtime figure skipped — per-Ns timing is not persisted.')
     else:
         plot_runtime_vs_ns(results, os.path.join(fig_dir, 'runtime_vs_Ns.png'),
                            effective_skip)
     save_metrics(results, os.path.join(fig_dir, 'sweep_metrics.npz'),
-                 effective_skip)
+                 effective_skip, bin_medians)
 
     codeEndTime = time.perf_counter()
     print_time(codeStartTime, codeEndTime,
