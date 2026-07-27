@@ -124,7 +124,7 @@ def parse_args():
 
 # ─── TFSP core computation ────────────────────────────────────────────────────
 
-def compute_tfsp(timeseries, tr, sweep_period_s):
+def compute_tfsp(timeseries, tr, sweep_period_s, use_power=True):
     """
     Compute Task-band Fractional Spectral Power (TFSP) per voxel/vertex.
 
@@ -136,6 +136,10 @@ def compute_tfsp(timeseries, tr, sweep_period_s):
         Repetition time in seconds.
     sweep_period_s : float
         Bar sweep cycle period in seconds; sets the task frequency band.
+    use_power : bool
+        If True, use spectral power (|X(f)|²). Matches the quadratic scaling
+        of R² (variance ratio) and restores maximal correlation.
+        If False, use linear amplitude (|X(f)|) following fALFF convention.
 
     Returns
     -------
@@ -145,11 +149,12 @@ def compute_tfsp(timeseries, tr, sweep_period_s):
     N, T = timeseries.shape
 
     f_fundamental = 1.0 / sweep_period_s
-    f_min         = f_fundamental
+    # Include low-frequency stimulus envelope modulations down to 0.005 Hz
+    f_min         = max(0.005, f_fundamental / 4.0)
     f_max         = min(4.0 * f_fundamental, 0.5 / tr)   # clamp to Nyquist
-    f_drift       = f_fundamental / 2.0
+    f_drift       = max(0.002, f_min / 2.0)              # exclude sub-envelope drift
 
-    # Per-voxel z-score before FFT (removes amplitude differences across voxels)
+    # Per-voxel z-score before FFT
     means = timeseries.mean(axis=1, keepdims=True)
     stds  = timeseries.std(axis=1,  keepdims=True)
     stds[stds == 0] = 1.0
@@ -157,13 +162,17 @@ def compute_tfsp(timeseries, tr, sweep_period_s):
 
     data_fft = np.fft.rfft(ts_norm, axis=1)
     freqs    = np.fft.rfftfreq(T, d=tr)
-    amp      = np.abs(data_fft)                           # amplitude, not power
+
+    if use_power:
+        spec = np.abs(data_fft) ** 2                     # power domain (|X(f)|²)
+    else:
+        spec = np.abs(data_fft)                          # amplitude domain (|X(f)|)
 
     task_mask  = (freqs >= f_min) & (freqs <= f_max)
     total_mask = freqs >  f_drift
 
-    numerator   = amp[:, task_mask].sum(axis=1)
-    denominator = amp[:, total_mask].sum(axis=1)
+    numerator   = spec[:, task_mask].sum(axis=1)
+    denominator = spec[:, total_mask].sum(axis=1)
     denominator[denominator == 0] = 1.0
 
     return numerator / denominator, f_min, f_max, f_drift
