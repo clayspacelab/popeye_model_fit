@@ -89,8 +89,14 @@ def parse_args():
 
 
 def get_s03_gridfit_path(p, Ns, n_res):
-    """S03-specific grid-prediction cache path (encodes Ns and n-grid resolution)."""
-    return os.path.join(p['stimuli_path'], f'gridfit_S03_Ns{Ns}_n{n_res}.npy')
+    """Grid-prediction cache path for the sweep (encodes Ns and n-grid resolution).
+
+    Lives alongside the other caches in ``Stimuli/gridestims/``. The Ns + n-res
+    encoding keeps it distinct from the default ``gridfit_{Ns}.npy`` caches.
+    """
+    gridestims_dir = os.path.join(p['stimuli_path'], 'gridestims')
+    os.makedirs(gridestims_dir, exist_ok=True)
+    return os.path.join(gridestims_dir, f'gridfit_Ns{Ns}_n{n_res}.npy')
 
 
 def build_grid_space(stimulus, Ns):
@@ -145,8 +151,11 @@ def compute_metrics(trueFit_data, fitted_data):
 
 
 def fit_one_gridsize(Ns, stimulus, timeseries_data, indices, nvoxs, p, use_gpu,
-                     skip_final_fit, n_iter=300, lr=0.005, sub_batch=None):
-    """Run grid (+ optional final) fit for a single Ns. Returns a results dict."""
+                     skip_final_fit, fit_dir, n_iter=300, lr=0.005, sub_batch=None):
+    """Run grid (+ optional final) fit for a single Ns. Returns a results dict.
+
+    Grid- and final-fit estimates are saved to ``fit_dir`` (the S03 subfolder).
+    """
     print(f'\n{"="*70}\n=== Ns = {Ns} ===\n{"="*70}')
 
     grid_space, param_width = build_grid_space(stimulus, Ns)
@@ -182,6 +191,10 @@ def fit_one_gridsize(Ns, stimulus, timeseries_data, indices, nvoxs, p, use_gpu,
         'grid': None,
         'final': None,
     }
+    gfit_save_path = os.path.join(fit_dir, f'RF_ss5_gFit_popeye_Ns{Ns}.npy')
+    np.save(gfit_save_path, RF_gFit[0, 0, :, :])
+    print(f'[Ns={Ns}] Grid-fit estimates saved to {gfit_save_path}')
+
     grid_corr, grid_r2 = compute_metrics(trueFit_data_global, RF_gFit[0, 0, :, :])
     result['grid'] = {'corr': grid_corr, 'mean_r2': grid_r2}
 
@@ -196,6 +209,10 @@ def fit_one_gridsize(Ns, stimulus, timeseries_data, indices, nvoxs, p, use_gpu,
         t_final = time.perf_counter()
         result['final_fit_time'] = t_final - t_grid
         print_time(t_grid, t_final, f'[Ns={Ns}] Final fit')
+
+        ffit_save_path = os.path.join(fit_dir, f'RF_ss5_fFit_popeye_Ns{Ns}.npy')
+        np.save(ffit_save_path, RF_fFit[0, 0, :, :])
+        print(f'[Ns={Ns}] Final-fit estimates saved to {ffit_save_path}')
 
         final_corr, final_r2 = compute_metrics(trueFit_data_global, RF_fFit[0, 0, :, :])
         result['final'] = {'corr': final_corr, 'mean_r2': final_r2}
@@ -383,18 +400,20 @@ def _run(args, codeStartTime, p, params):
         params['dtype'],
     )
 
+    # All S03 outputs live under dedicated S03 subfolders of the usual dirs.
+    fit_dir = os.path.join(p['pRF_data'], 'Simulation', 'popeyeFit', 'S03')
+    os.makedirs(fit_dir, exist_ok=True)
+    fig_dir = os.path.join(p['pRF_data'], 'Simulation', 'figures', 'S03')
+    os.makedirs(fig_dir, exist_ok=True)
+
     # Sweep.
     results = []
     for Ns in args.grid_sizes:
         results.append(
             fit_one_gridsize(Ns, stimulus, timeseries_data, indices, nvoxs, p,
-                             args.use_gpu, args.skip_final_fit,
+                             args.use_gpu, args.skip_final_fit, fit_dir,
                              n_iter=args.n_iter, lr=args.lr, sub_batch=args.sub_batch)
         )
-
-    # Outputs.
-    fig_dir = os.path.join(p['pRF_data'], 'Simulation', 'figures', 'gridsize_sweep')
-    os.makedirs(fig_dir, exist_ok=True)
 
     plot_accuracy_vs_ns(results, os.path.join(fig_dir, 'accuracy_vs_Ns.png'),
                         args.skip_final_fit)

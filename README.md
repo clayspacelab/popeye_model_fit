@@ -33,7 +33,7 @@ The codebase follows a clear prefixed structure:
 | **`01_run_pipeline.py`** | **Primary CLI entry point.** Orchestrates: stimulus loading → grid prediction → grid fit → final fit → output. |
 | **`S01_simulate_prf.py`** | Generates synthetic pRF timeseries with ground-truth CSS parameters, additive noise, baseline, and linear trend. Supports GPU batch forward model (CuPy). Default: 100,000 voxels. |
 | **`S02_run_simulation_fit.py`** | Fits simulated data from S01 and validates against ground truth. Comparison figures show identity scatter for spatial parameters (x, y, σ, n, θ, ρ) and **distributions** for R² and beta. All outputs labeled with `Ns`. |
-| **`S03_gridsize_sweep.py`** | Sweeps grid density `Ns` (default 10→100 by 10) over the S01 simulated data, running grid + final fit for each. Uses a **finer CSS exponent grid (10 values vs 4)** and defaults to **GPU**. Produces "accuracy vs Ns" (per-parameter correlation with ground truth), "R² vs Ns", and "runtime vs Ns" figures plus a `sweep_metrics.npz`. Grid-prediction caches are S03-specific (`gridfit_S03_Ns{Ns}_n{n_res}.npy`) so they never collide with S02's. |
+| **`S03_gridsize_sweep.py`** | Sweeps grid density `Ns` (default 10→100 by 10) over the S01 simulated data, running grid + final fit for each. Uses a **finer CSS exponent grid (10 values vs 4)** and defaults to **GPU**. Produces "accuracy vs Ns" (per-parameter correlation with ground truth), "R² vs Ns", and "runtime vs Ns" figures plus a `sweep_metrics.npz`. All fits/figures are written under `S03/` subfolders; grid-prediction caches (`gridfit_Ns{Ns}_n{n_res}.npy`) live in `Stimuli/gridestims/` and never collide with the default `gridfit_{Ns}.npy`. |
 | **`D01_analyze_snr.py`** | Unified diagnostic tool for TFSP analysis. `--mode subject` (default): real surface GIFTI data — sample signal traces, amplitude spectra, TFSP histogram, quantile signal profiles, and TFSP vs R² scatter when fit estimates are present. `--mode simulation`: loads pkl timeseries from S01 and correlates TFSP with pRF fit R² from S02, with scatter, quintile bar, and summary panel figures. |
 
 ---
@@ -100,11 +100,14 @@ python S03_gridsize_sweep.py --grid-sizes 20 40 60 80 100 --n-voxels 5000 --no-g
 python S03_gridsize_sweep.py --skip-final-fit
 ```
 
-Outputs → `Simulation/figures/gridsize_sweep/`:
-* `accuracy_vs_Ns.png` — Pearson correlation (fitted vs ground truth) vs Ns, one panel per parameter (`theta, rho, sigma, n, x, y`), grid & final fit.
-* `r2_vs_Ns.png` — mean fitted R² as a function of Ns.
-* `runtime_vs_Ns.png` — grid-fit / final-fit wall-clock time and constrained grid-point count vs Ns.
-* `sweep_metrics.npz` — raw metrics for all Ns.
+Outputs:
+* Fits → `Simulation/popeyeFit/S03/RF_ss5_{g,f}Fit_popeye_Ns{Ns}.npy` (per Ns).
+* Figures + metrics → `Simulation/figures/S03/`:
+  * `accuracy_vs_Ns.png` — Pearson correlation (fitted vs ground truth) vs Ns, one panel per parameter (`theta, rho, sigma, n, x, y`), grid & final fit.
+  * `r2_vs_Ns.png` — mean fitted R² as a function of Ns.
+  * `runtime_vs_Ns.png` — grid-fit / final-fit wall-clock time and constrained grid-point count vs Ns.
+  * `sweep_metrics.npz` — raw metrics for all Ns.
+* Grid-prediction caches → `Stimuli/gridestims/gridfit_Ns{Ns}_n{n_res}.npy`.
 
 ---
 
@@ -174,12 +177,13 @@ Tested on: NVIDIA Titan Xp (12 GB VRAM), CUDA 12.2.
 
 ## Grid Prediction Caching
 
-Grid predictions are expensive (minutes for Ns=50, ~3 min for Ns=100). They are cached per `Ns` in `Stimuli/`:
+Grid predictions are expensive (minutes for Ns=50, ~3 min for Ns=100). They are cached per `Ns` in `Stimuli/gridestims/`:
 
 ```
-pRF_data/Stimuli/
-    gridfit_50.npy     ← Ns=50 cache
-    gridfit_100.npy    ← Ns=100 cache
+pRF_data/Stimuli/gridestims/
+    gridfit_50.npy           ← Ns=50 cache (default 4-value n grid)
+    gridfit_100.npy          ← Ns=100 cache
+    gridfit_Ns50_n10.npy     ← S03 sweep cache (Ns=50, 10-value n grid)
 ```
 
 On re-run, if the cache exists the generation step is skipped automatically.

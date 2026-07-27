@@ -30,10 +30,15 @@ GRID_DEFAULTS = {
 }
 
 def get_gridfit_path(p, Ns=None):
-    """Return the cached grid prediction path formatted with Ns."""
+    """Return the cached grid prediction path formatted with Ns.
+
+    Caches live in a dedicated ``Stimuli/gridestims/`` folder (created on demand).
+    """
     if Ns is None:
         Ns = GRID_DEFAULTS['Ns']
-    return os.path.join(p['stimuli_path'], f'gridfit_{Ns}.npy')
+    gridestims_dir = os.path.join(p['stimuli_path'], 'gridestims')
+    os.makedirs(gridestims_dir, exist_ok=True)
+    return os.path.join(gridestims_dir, f'gridfit_{Ns}.npy')
 
 # CSS model output field names (9-element tuple per voxel/vertex)
 CSS_FIELD_NAMES = (
