@@ -121,27 +121,41 @@ def load_simulation_data(p, nvox):
 
 
 def plot_comparison(trueFit_data, fitted_data, title_prefix, save_path):
-    """Plot ground truth vs fitted parameters (dark theme)."""
+    """
+    Plot ground truth vs fitted parameters (dark theme).
+
+    For most parameters: scatter of fitted vs ground-truth with identity line.
+    For R2 (idx 1) and beta (idx 7): histogram of the fitted distribution,
+    since these do not have a clean ground-truth to scatter against.
+    """
     param_names = ['theta', 'rsquared', 'rho', 'sigma', 'n', 'x', 'y', 'beta']
+    DIST_INDICES = {1, 7}   # show as histograms, not identity scatter
 
     f, axs = plt.subplots(2, 4, figsize=(20, 10))
     axs = axs.flatten()
     for i in range(8):
         ax = axs[i]
-        true_vals = trueFit_data[:, i].flatten()
-        fit_vals  = fitted_data[:, i].flatten()
-        ax.scatter(true_vals, fit_vals, s=12, alpha=0.6,
-                   color='#00e5ff', edgecolors='none')  # cyan dots on dark bg
-        lims = [min(ax.get_xlim()[0], ax.get_ylim()[0]),
-                max(ax.get_xlim()[1], ax.get_ylim()[1])]
-        ax.plot(lims, lims, '--', color='#ff4081', linewidth=1.2,  # magenta identity line
-                label='identity')
-        ax.set_xlim(lims)
-        ax.set_ylim(lims)
-        ax.set_title(f"{title_prefix}: {param_names[i]}")
-        ax.set_xlabel('Ground Truth')
-        ax.set_ylabel('Fitted')
-        ax.grid(True, alpha=0.3)
+        fit_vals = fitted_data[:, i].flatten()
+
+        if i in DIST_INDICES:
+            ax.hist(fit_vals, bins=60, color='#00e5ff', edgecolor='none', alpha=0.85)
+            ax.set_title(f"{title_prefix}: {param_names[i]} (distribution)")
+            ax.set_xlabel('Fitted value')
+            ax.set_ylabel('Count')
+            ax.grid(True, alpha=0.3)
+        else:
+            true_vals = trueFit_data[:, i].flatten()
+            ax.scatter(true_vals, fit_vals, s=8, alpha=0.5,
+                       color='#00e5ff', edgecolors='none')
+            lims = [min(true_vals.min(), fit_vals.min()),
+                    max(true_vals.max(), fit_vals.max())]
+            ax.plot(lims, lims, '--', color='#ff4081', linewidth=1.2, label='identity')
+            ax.set_xlim(lims)
+            ax.set_ylim(lims)
+            ax.set_title(f"{title_prefix}: {param_names[i]}")
+            ax.set_xlabel('Ground Truth')
+            ax.set_ylabel('Fitted')
+            ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
