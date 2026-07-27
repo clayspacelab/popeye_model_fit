@@ -71,8 +71,8 @@ def parse_args():
         description='Sweep grid density (Ns) on simulated data and evaluate accuracy vs runtime'
     )
     parser.add_argument('--grid-sizes', type=int, nargs='+',
-                        default=[10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
-                        help='Grid densities Ns to sweep (default: 10..100 by 10)')
+                        default=[10, 20, 30, 40, 50, 60, 70],
+                        help='Grid densities Ns to sweep (default: 10..70 by 10)')
     parser.add_argument('--n-voxels', type=int, default=None,
                         help='Number of voxels to test (default: all simulated voxels)')
     parser.add_argument('--no-gpu', dest='use_gpu', action='store_false',
@@ -88,6 +88,9 @@ def parse_args():
     parser.add_argument('--no-prefetch', action='store_true',
                         help='Disable overlapping next-Ns grid prediction with the current '
                              'GPU fit (run fully sequentially)')
+    parser.add_argument('--plot-only', action='store_true',
+                        help='Skip fitting; rebuild figures/metrics from grid/final fit '
+                             '.npy files already saved under Simulation/popeyeFit/S03/')
     parser.set_defaults(use_gpu=True)
     return parser.parse_args()
 
@@ -235,6 +238,61 @@ def fit_from_preds(Ns, grid_space, param_width, grid_preds, prep_time,
         result['final_fit_time'] = np.nan
 
     return result
+
+
+def build_results_from_saved(grid_sizes, fit_dir, stimulus, trueFit_data,
+                             skip_final_fit):
+    """Reconstruct sweep results from previously saved grid/final fit .npy files.
+
+    Used by --plot-only when a run was interrupted before the in-memory plotting
+    step. Recomputes accuracy/R² metrics against ground truth for each Ns whose
+    fits are present; timing is unavailable (not persisted) and set to NaN.
+
+    Returns (results, effective_skip) where effective_skip is True if no final
+    fits were found (so downstream plots show grid only).
+    """
+    def gpath(Ns):
+        return os.path.join(fit_dir, f'RF_ss5_gFit_popeye_Ns{Ns}.npy')
+
+    def fpath(Ns):
+        return os.path.join(fit_dir, f'RF_ss5_fFit_popeye_Ns{Ns}.npy')
+
+    any_final = any(os.path.exists(fpath(Ns)) for Ns in grid_sizes)
+    use_final = (not skip_final_fit) and any_final
+    if (not skip_final_fit) and not any_final:
+        print('[plot-only] No final-fit files found — plotting grid fit only.')
+
+    results = []
+    for Ns in grid_sizes:
+        if not os.path.exists(gpath(Ns)):
+            print(f'[plot-only] Ns={Ns}: no grid fit at {gpath(Ns)} — skipping')
+            continue
+        if use_final and not os.path.exists(fpath(Ns)):
+            print(f'[plot-only] Ns={Ns}: final fit missing — skipping for consistency')
+            continue
+
+        gfit = np.load(gpath(Ns))
+        n = min(len(trueFit_data), len(gfit))
+        grid_space, _ = build_grid_space(stimulus, Ns)
+        gc, gr2 = compute_metrics(trueFit_data[:n], gfit[:n])
+        res = {
+            'Ns': Ns,
+            'n_grid_points': len(grid_space),
+            'grid_prep_time': np.nan,
+            'grid_fit_time': np.nan,
+            'final_fit_time': np.nan,
+            'grid': {'corr': gc, 'mean_r2': gr2},
+            'final': None,
+        }
+        if use_final:
+            ffit = np.load(fpath(Ns))
+            m = min(len(trueFit_data), len(ffit))
+            fc, fr2 = compute_metrics(trueFit_data[:m], ffit[:m])
+            res['final'] = {'corr': fc, 'mean_r2': fr2}
+        results.append(res)
+        print(f'[plot-only] Ns={Ns}: loaded ({"grid+final" if use_final else "grid"})')
+
+    return results, (not use_final)
 
 
 def plot_accuracy_vs_ns(results, save_path, skip_final_fit):
@@ -387,16 +445,18 @@ def _run(args, codeStartTime, p, params):
 
     print('=== Grid-size Sweep (S03) ===')
     print(f'Run started: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
+    print(f'Mode:        {"plot-only (rebuild figures from saved fits)" if args.plot_only else "fit + plot"}')
     print(f'N voxels:    {nvoxs}')
     print(f'Grid sizes:  {args.grid_sizes}')
     print(f'n-grid:      {N_GRID_VALUES} ({len(N_GRID_VALUES)} values)')
-    print(f'GPU:         {"enabled" if args.use_gpu else "disabled"}')
-    print(f'Prefetch:    {"disabled" if args.no_prefetch else "enabled (depth 1)"}')
-    print(f'Final fit:   {"skipped" if args.skip_final_fit else "enabled"}')
-    if not args.skip_final_fit:
-        print(f'  n_iter:    {args.n_iter}')
-        print(f'  lr:        {args.lr}')
-        print(f'  sub_batch: {args.sub_batch if args.sub_batch is not None else "auto"}')
+    if not args.plot_only:
+        print(f'GPU:         {"enabled" if args.use_gpu else "disabled"}')
+        print(f'Prefetch:    {"disabled" if args.no_prefetch else "enabled (depth 1)"}')
+        print(f'Final fit:   {"skipped" if args.skip_final_fit else "enabled"}')
+        if not args.skip_final_fit:
+            print(f'  n_iter:    {args.n_iter}')
+            print(f'  lr:        {args.lr}')
+            print(f'  sub_batch: {args.sub_batch if args.sub_batch is not None else "auto"}')
     print()
 
     # Detrend once.
@@ -423,53 +483,67 @@ def _run(args, codeStartTime, p, params):
     fig_dir = os.path.join(p['pRF_data'], 'Simulation', 'figures', 'S03')
     os.makedirs(fig_dir, exist_ok=True)
 
-    # Sweep. The CPU grid-prediction of the next Ns is overlapped with the GPU
-    # fit of the current Ns (prefetch depth 1), since they use disjoint resources
-    # (process Pool vs GPU) and grid predictions are independent of the fit.
     grid_sizes = list(args.grid_sizes)
-    nTRs = timeseries_data.shape[1]
-    results = []
+    effective_skip = args.skip_final_fit
 
-    def _prep(Ns):
-        return prepare_gridpreds(Ns, stimulus, p, nTRs)
-
-    if args.no_prefetch or len(grid_sizes) <= 1:
-        for Ns in grid_sizes:
-            grid_space, param_width, grid_preds, prep_time = _prep(Ns)
-            results.append(
-                fit_from_preds(Ns, grid_space, param_width, grid_preds, prep_time,
-                               stimulus, timeseries_data, indices, nvoxs,
-                               args.use_gpu, args.skip_final_fit, fit_dir,
-                               n_iter=args.n_iter, lr=args.lr, sub_batch=args.sub_batch)
-            )
+    if args.plot_only:
+        # Rebuild results from previously saved fits — no fitting.
+        results, effective_skip = build_results_from_saved(
+            grid_sizes, fit_dir, stimulus, trueFit_data, args.skip_final_fit)
+        if not results:
+            print('[plot-only] No saved fits found for the requested Ns — nothing to plot.')
+            return
     else:
-        print(f'\nPrefetch enabled: overlapping next-Ns grid prediction with '
-              f'current-Ns GPU fit (depth 1).')
-        with ThreadPoolExecutor(max_workers=1) as ex:
-            fut = ex.submit(_prep, grid_sizes[0])
-            for i, Ns in enumerate(grid_sizes):
-                grid_space, param_width, grid_preds, prep_time = fut.result()
-                # Kick off the next Ns's CPU prediction before we occupy the GPU.
-                if i + 1 < len(grid_sizes):
-                    fut = ex.submit(_prep, grid_sizes[i + 1])
+        # Sweep. The CPU grid-prediction of the next Ns is overlapped with the GPU
+        # fit of the current Ns (prefetch depth 1), since they use disjoint resources
+        # (process Pool vs GPU) and grid predictions are independent of the fit.
+        nTRs = timeseries_data.shape[1]
+        results = []
+
+        def _prep(Ns):
+            return prepare_gridpreds(Ns, stimulus, p, nTRs)
+
+        if args.no_prefetch or len(grid_sizes) <= 1:
+            for Ns in grid_sizes:
+                grid_space, param_width, grid_preds, prep_time = _prep(Ns)
                 results.append(
                     fit_from_preds(Ns, grid_space, param_width, grid_preds, prep_time,
                                    stimulus, timeseries_data, indices, nvoxs,
                                    args.use_gpu, args.skip_final_fit, fit_dir,
                                    n_iter=args.n_iter, lr=args.lr, sub_batch=args.sub_batch)
                 )
+        else:
+            print(f'\nPrefetch enabled: overlapping next-Ns grid prediction with '
+                  f'current-Ns GPU fit (depth 1).')
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(_prep, grid_sizes[0])
+                for i, Ns in enumerate(grid_sizes):
+                    grid_space, param_width, grid_preds, prep_time = fut.result()
+                    # Kick off the next Ns's CPU prediction before we occupy the GPU.
+                    if i + 1 < len(grid_sizes):
+                        fut = ex.submit(_prep, grid_sizes[i + 1])
+                    results.append(
+                        fit_from_preds(Ns, grid_space, param_width, grid_preds, prep_time,
+                                       stimulus, timeseries_data, indices, nvoxs,
+                                       args.use_gpu, args.skip_final_fit, fit_dir,
+                                       n_iter=args.n_iter, lr=args.lr, sub_batch=args.sub_batch)
+                    )
 
     plot_accuracy_vs_ns(results, os.path.join(fig_dir, 'accuracy_vs_Ns.png'),
-                        args.skip_final_fit)
+                        effective_skip)
     plot_r2_vs_ns(results, os.path.join(fig_dir, 'r2_vs_Ns.png'),
-                  args.skip_final_fit)
-    plot_runtime_vs_ns(results, os.path.join(fig_dir, 'runtime_vs_Ns.png'),
-                       args.skip_final_fit)
+                  effective_skip)
+    if args.plot_only:
+        print('[plot-only] Runtime figure skipped — per-Ns timing is not persisted.')
+    else:
+        plot_runtime_vs_ns(results, os.path.join(fig_dir, 'runtime_vs_Ns.png'),
+                           effective_skip)
     save_metrics(results, os.path.join(fig_dir, 'sweep_metrics.npz'),
-                 args.skip_final_fit)
+                 effective_skip)
 
     codeEndTime = time.perf_counter()
-    print_time(codeStartTime, codeEndTime, 'Total grid-size sweep')
+    print_time(codeStartTime, codeEndTime,
+               'Total plot-only rebuild' if args.plot_only else 'Total grid-size sweep')
 
 
 if __name__ == '__main__':
