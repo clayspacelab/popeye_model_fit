@@ -98,7 +98,16 @@ python S03_gridsize_sweep.py --grid-sizes 20 40 60 80 100 --n-voxels 5000 --no-g
 
 # Grid fit only (skip final refinement)
 python S03_gridsize_sweep.py --skip-final-fit
+
+# Disable CPU/GPU prefetch overlap (fully sequential)
+python S03_gridsize_sweep.py --no-prefetch
 ```
+
+**CPU/GPU prefetch:** grid prediction is CPU-bound (`multiprocessing.Pool`) and independent of
+the GPU fit, so by default S03 precomputes the *next* Ns's grid predictions while the GPU fits
+the *current* Ns (prefetch depth 1). On a single GPU the fits themselves stay serial (they each
+size against the whole device's free VRAM), so this hides the grid-prediction time rather than
+running fits in parallel. Use `--no-prefetch` to run fully sequentially.
 
 Outputs:
 * Fits → `Simulation/popeyeFit/S03/RF_ss5_{g,f}Fit_popeye_Ns{Ns}.npy` (per Ns).

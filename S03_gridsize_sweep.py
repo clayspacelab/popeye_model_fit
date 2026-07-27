@@ -35,6 +35,7 @@ import matplotlib.pyplot as plt
 import nibabel as nib
 
 from itertools import product
+from concurrent.futures import ThreadPoolExecutor
 from scipy import stats
 
 from popeye.visual_stimulus import VisualStimulus
@@ -84,6 +85,9 @@ def parse_args():
                         help='Adam learning rate for the GPU final fit (default: 0.005)')
     parser.add_argument('--sub-batch', type=int, default=None,
                         help='Voxels per GPU sub-batch (default: auto-size from free VRAM)')
+    parser.add_argument('--no-prefetch', action='store_true',
+                        help='Disable overlapping next-Ns grid prediction with the current '
+                             'GPU fit (run fully sequentially)')
     parser.set_defaults(use_gpu=True)
     return parser.parse_args()
 
@@ -150,33 +154,43 @@ def compute_metrics(trueFit_data, fitted_data):
     return corr, mean_r2
 
 
-def fit_one_gridsize(Ns, stimulus, timeseries_data, indices, nvoxs, p, use_gpu,
-                     skip_final_fit, fit_dir, n_iter=300, lr=0.005, sub_batch=None):
-    """Run grid (+ optional final) fit for a single Ns. Returns a results dict.
+def prepare_gridpreds(Ns, stimulus, p, nTRs):
+    """CPU stage: build the grid space and load-or-generate its grid predictions.
 
+    This is the only compute-heavy CPU step (`getGridPreds` uses a process Pool)
+    and is independent of the GPU fit, so it can run for Ns=(k+1) while the GPU
+    fits Ns=k. Returns (grid_space, param_width, grid_preds, prep_time).
+    """
+    t0 = time.perf_counter()
+    grid_space, param_width = build_grid_space(stimulus, Ns)
+    print(f'[Ns={Ns}] Grid space: {len(grid_space)} points '
+          f'(n-grid resolution = {len(N_GRID_VALUES)})')
+
+    gridfit_path = get_s03_gridfit_path(p, Ns, len(N_GRID_VALUES))
+    if os.path.exists(gridfit_path):
+        print(f'[Ns={Ns}] Loading grid predictions from disk ({gridfit_path})')
+        grid_preds = np.load(gridfit_path)
+    else:
+        print(f'[Ns={Ns}] Generating grid predictions ({gridfit_path})...')
+        grid_preds = getGridPreds(grid_space, stimulus, gridfit_path, nTRs)
+    prep_time = time.perf_counter() - t0
+    print_time(t0, time.perf_counter(), f'[Ns={Ns}] Grid predictions')
+    return grid_space, param_width, grid_preds, prep_time
+
+
+def fit_from_preds(Ns, grid_space, param_width, grid_preds, prep_time,
+                   stimulus, timeseries_data, indices, nvoxs, use_gpu,
+                   skip_final_fit, fit_dir, n_iter=300, lr=0.005, sub_batch=None):
+    """GPU stage: grid fit (+ optional final fit) from precomputed predictions.
+
+    Runs on the main thread so all CuPy work stays on a single device context.
     Grid- and final-fit estimates are saved to ``fit_dir`` (the S03 subfolder).
     """
     print(f'\n{"="*70}\n=== Ns = {Ns} ===\n{"="*70}')
 
-    grid_space, param_width = build_grid_space(stimulus, Ns)
-    print(f'Grid space: {len(grid_space)} points '
-          f'(n-grid resolution = {len(N_GRID_VALUES)})')
-
-    # Grid predictions (cached per Ns + n-resolution).
-    t0 = time.perf_counter()
-    gridfit_path = get_s03_gridfit_path(p, Ns, len(N_GRID_VALUES))
-    if os.path.exists(gridfit_path):
-        print(f'Loading grid predictions from disk ({gridfit_path})')
-        grid_preds = np.load(gridfit_path)
-    else:
-        print(f'Generating grid predictions ({gridfit_path})...')
-        grid_preds = getGridPreds(grid_space, stimulus, gridfit_path,
-                                  timeseries_data.shape[1])
-    t_pred = time.perf_counter()
-    print_time(t0, t_pred, f'[Ns={Ns}] Grid predictions')
-
     # Grid fit.
     print('Starting grid fit...')
+    t_pred = time.perf_counter()
     RF_gFit = np.empty((1, 1, nvoxs, 9))
     RF_gFit = get_grid_estims(grid_preds, grid_space, timeseries_data,
                               RF_gFit, indices, use_gpu=use_gpu)
@@ -187,6 +201,7 @@ def fit_one_gridsize(Ns, stimulus, timeseries_data, indices, nvoxs, p, use_gpu,
     result = {
         'Ns': Ns,
         'n_grid_points': len(grid_space),
+        'grid_prep_time': prep_time,
         'grid_fit_time': grid_time,
         'grid': None,
         'final': None,
@@ -311,6 +326,7 @@ def save_metrics(results, save_path, skip_final_fit):
     payload = {
         'Ns': Ns_vals,
         'n_grid_points': np.array([r['n_grid_points'] for r in results]),
+        'grid_prep_time': np.array([r['grid_prep_time'] for r in results]),
         'grid_fit_time': np.array([r['grid_fit_time'] for r in results]),
         'final_fit_time': np.array([r['final_fit_time'] for r in results]),
         'grid_mean_r2': np.array([r['grid']['mean_r2'] for r in results]),
@@ -375,6 +391,7 @@ def _run(args, codeStartTime, p, params):
     print(f'Grid sizes:  {args.grid_sizes}')
     print(f'n-grid:      {N_GRID_VALUES} ({len(N_GRID_VALUES)} values)')
     print(f'GPU:         {"enabled" if args.use_gpu else "disabled"}')
+    print(f'Prefetch:    {"disabled" if args.no_prefetch else "enabled (depth 1)"}')
     print(f'Final fit:   {"skipped" if args.skip_final_fit else "enabled"}')
     if not args.skip_final_fit:
         print(f'  n_iter:    {args.n_iter}')
@@ -406,14 +423,41 @@ def _run(args, codeStartTime, p, params):
     fig_dir = os.path.join(p['pRF_data'], 'Simulation', 'figures', 'S03')
     os.makedirs(fig_dir, exist_ok=True)
 
-    # Sweep.
+    # Sweep. The CPU grid-prediction of the next Ns is overlapped with the GPU
+    # fit of the current Ns (prefetch depth 1), since they use disjoint resources
+    # (process Pool vs GPU) and grid predictions are independent of the fit.
+    grid_sizes = list(args.grid_sizes)
+    nTRs = timeseries_data.shape[1]
     results = []
-    for Ns in args.grid_sizes:
-        results.append(
-            fit_one_gridsize(Ns, stimulus, timeseries_data, indices, nvoxs, p,
-                             args.use_gpu, args.skip_final_fit, fit_dir,
-                             n_iter=args.n_iter, lr=args.lr, sub_batch=args.sub_batch)
-        )
+
+    def _prep(Ns):
+        return prepare_gridpreds(Ns, stimulus, p, nTRs)
+
+    if args.no_prefetch or len(grid_sizes) <= 1:
+        for Ns in grid_sizes:
+            grid_space, param_width, grid_preds, prep_time = _prep(Ns)
+            results.append(
+                fit_from_preds(Ns, grid_space, param_width, grid_preds, prep_time,
+                               stimulus, timeseries_data, indices, nvoxs,
+                               args.use_gpu, args.skip_final_fit, fit_dir,
+                               n_iter=args.n_iter, lr=args.lr, sub_batch=args.sub_batch)
+            )
+    else:
+        print(f'\nPrefetch enabled: overlapping next-Ns grid prediction with '
+              f'current-Ns GPU fit (depth 1).')
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            fut = ex.submit(_prep, grid_sizes[0])
+            for i, Ns in enumerate(grid_sizes):
+                grid_space, param_width, grid_preds, prep_time = fut.result()
+                # Kick off the next Ns's CPU prediction before we occupy the GPU.
+                if i + 1 < len(grid_sizes):
+                    fut = ex.submit(_prep, grid_sizes[i + 1])
+                results.append(
+                    fit_from_preds(Ns, grid_space, param_width, grid_preds, prep_time,
+                                   stimulus, timeseries_data, indices, nvoxs,
+                                   args.use_gpu, args.skip_final_fit, fit_dir,
+                                   n_iter=args.n_iter, lr=args.lr, sub_batch=args.sub_batch)
+                )
 
     plot_accuracy_vs_ns(results, os.path.join(fig_dir, 'accuracy_vs_Ns.png'),
                         args.skip_final_fit)
