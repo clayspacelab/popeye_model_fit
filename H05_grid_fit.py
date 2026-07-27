@@ -297,8 +297,10 @@ def _get_grid_estims_gpu(grid_preds, grid_space, timeseries_data, gFit,
     free_bytes, total_bytes = cp.cuda.runtime.memGetInfo()
     safety_margin = 768 * 1024**2   # 768 MB headroom for CuPy intermediates
 
-    # Per-tile peak: S_xy (float32, 4 B) + neg_mask (bool, 1 B) = 5 B per elem
-    max_elements = max(1, (free_bytes - safety_margin) // 5)
+    # Per-tile peak: ONLY S_xy (float32, 4 B/elem).
+    # neg_mask is eliminated — invalid fits handled by clipping, not masking.
+    # Divisor=8 (not 4) to account for CuPy matmul + in-place op intermediates.
+    max_elements = max(1, (free_bytes - safety_margin) // 8)
 
     G_chunk = min(ngrids, max(256, int(max_elements ** 0.5)))
     B_vox   = min(nvoxs,  max(1,   int(max_elements // G_chunk)))
@@ -329,18 +331,19 @@ def _get_grid_estims_gpu(grid_preds, grid_space, timeseries_data, gFit,
             # ── Step 1: S_xy = Y_centered @ Xc.T  (B, Gc) — ONE allocation ──
             S_xy = Y_centered @ Xc_chunk.T
 
-            # ── Step 2: neg slope mask — bool, 1 byte/elem ───────────────────
-            neg_mask = S_xy < 0
-
-            # ── Steps 3–5: in-place → reuse S_xy buffer ──────────────────────
-            # SSE = S_yy - S_xy² / S_xx   (equivalent to S_yy - beta1*S_xy)
+            # ── Steps 2–5: in-place → reuse S_xy buffer ──────────────────────
+            # SSE = S_yy - S_xy² / S_xx  (equiv. to S_yy - beta1·S_xy)
+            #
+            # Invalid fits: clip S_xy to 0 BEFORE squaring.
+            # Beta1 < 0 ↔ S_xy < 0.  Clipping → S_xy²=0 → SSE=S_yy.
+            # Since SSE_valid = S_yy - positive < S_yy, argmin always
+            # prefers valid fits over clipped ones — no masking needed.
+            # This eliminates neg_mask (1.73 GB) AND the hidden CuPy prefix
+            # scan that S_xy[bool_mask] triggers (~6.9 GB at this tile size).
+            cp.maximum(S_xy, cp.float32(0.0), out=S_xy)             # clip ≥ 0
             cp.multiply(S_xy, S_xy, out=S_xy)                        # S_xy²
             cp.divide(S_xy, Sxx_chunk[cp.newaxis, :], out=S_xy)     # S_xy²/S_xx
-            cp.subtract(S_yy[:, None], S_xy, out=S_xy)              # sse
-
-            # Apply negative-slope mask in-place
-            S_xy[neg_mask] = cp.inf
-            del neg_mask
+            cp.subtract(S_yy[:, None], S_xy, out=S_xy)              # SSE
 
             # ── Running argmin ────────────────────────────────────────────────
             chunk_min_sse = S_xy.min(axis=1)
