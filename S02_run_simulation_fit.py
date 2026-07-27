@@ -39,6 +39,8 @@ from H03_fit_utils import print_time, remove_trend, constraint_grids, set_dark_t
 from H04_grid_predict import getGridPreds
 from H05_grid_fit import get_grid_estims
 from H06_final_fit import get_final_estims
+from scipy import stats
+from D01_analyze_snr import compute_tfsp
 
 
 class TeeLogger:
@@ -120,16 +122,15 @@ def load_simulation_data(p, nvox):
     return scan_data, trueFit_data
 
 
-def plot_comparison(trueFit_data, fitted_data, title_prefix, save_path):
+def plot_comparison(trueFit_data, fitted_data, title_prefix, save_path, tfsp=None):
     """
     Plot ground truth vs fitted parameters (dark theme).
 
-    For most parameters: scatter of fitted vs ground-truth with identity line.
-    For R2 (idx 1) and beta (idx 7): histogram of the fitted distribution,
-    since these do not have a clean ground-truth to scatter against.
+    For spatial parameters (theta, rho, sigma, n, x, y): scatter of fitted vs ground truth.
+    For R2 (idx 1): TFSP as a function of fitted R2 (if tfsp is provided).
+    For beta (idx 7): histogram of fitted beta distribution.
     """
     param_names = ['theta', 'rsquared', 'rho', 'sigma', 'n', 'x', 'y', 'beta']
-    DIST_INDICES = {1, 7}   # show as histograms, not identity scatter
 
     f, axs = plt.subplots(2, 4, figsize=(20, 10))
     axs = axs.flatten()
@@ -137,7 +138,20 @@ def plot_comparison(trueFit_data, fitted_data, title_prefix, save_path):
         ax = axs[i]
         fit_vals = fitted_data[:, i].flatten()
 
-        if i in DIST_INDICES:
+        if i == 1 and tfsp is not None:
+            # TFSP as a function of R2
+            ax.scatter(fit_vals, tfsp, s=8, alpha=0.4, color='#00e5ff', edgecolors='none')
+            if len(fit_vals) > 2:
+                r, p = stats.pearsonr(fit_vals, tfsp)
+                m, b = np.polyfit(fit_vals, tfsp, 1)
+                xl = np.array([fit_vals.min(), fit_vals.max()])
+                ax.plot(xl, m * xl + b, '--', color='#ff4081', linewidth=1.2, label=f'r = {r:.3f}')
+                ax.legend(fontsize=9, framealpha=0.3)
+            ax.set_title(f"{title_prefix}: TFSP vs R2")
+            ax.set_xlabel('Fitted R2')
+            ax.set_ylabel('TFSP')
+            ax.grid(True, alpha=0.3)
+        elif i == 7:
             ax.hist(fit_vals, bins=60, color='#00e5ff', edgecolor='none', alpha=0.85)
             ax.set_title(f"{title_prefix}: {param_names[i]} (distribution)")
             ax.set_xlabel('Fitted value')
@@ -302,9 +316,12 @@ def _run(args, codeStartTime, p, params):
     np.save(gfit_save_path, RF_ss5_gFit[0, 0, :, :])
     print(f"Grid-fit estimates saved to {gfit_save_path}")
 
+    tfsp, _, _, _ = compute_tfsp(timeseries_data, tr=params['tr_length'], sweep_period_s=25.0)
+
     plot_comparison(trueFit_data, RF_ss5_gFit[0, 0, :, :],
                     f'Grid-fit (Ns={Ns})',
-                    os.path.join(fig_dir, f'gridfit_comparison_Ns{Ns}.png'))
+                    os.path.join(fig_dir, f'gridfit_comparison_Ns{Ns}.png'),
+                    tfsp=tfsp)
 
     # Final fit (optional)
     if not args.skip_final_fit:
@@ -323,7 +340,8 @@ def _run(args, codeStartTime, p, params):
 
         plot_comparison(trueFit_data, RF_ss5_fFit[0, 0, :, :],
                         f'Final-fit (Ns={Ns})',
-                        os.path.join(fig_dir, f'finalfit_comparison_Ns{Ns}.png'))
+                        os.path.join(fig_dir, f'finalfit_comparison_Ns{Ns}.png'),
+                        tfsp=tfsp)
 
     codeEndTime = time.perf_counter()
     print_time(codeStartTime, codeEndTime, 'Total simulation validation')
