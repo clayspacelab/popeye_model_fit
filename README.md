@@ -13,7 +13,7 @@ The codebase follows a clear prefixed structure:
 * **`H01` – `H06` (Helper Modules)**: Core library modules. Imported by main scripts; never executed directly.
 * **`01_run_pipeline.py` (Main Pipeline)**: Primary entry point for fitting real subject data.
 * **`S01` – `S02` (Simulation Tools)**: Synthetic data generation and model validation.
-* **`D01` – `D02` (Diagnostics)**: Data quality analysis and SNR characterization tools.
+* **`D01` (Diagnostics)**: Data quality analysis and SNR characterization tools.
 * **`notebooks/`**: Interactive exploration and debugging notebooks.
 * **`deprecated/`**: Legacy files, volume-only fitters, and superseded prototypes.
 * **`deprecated_hpc/`**: NYU Greene HPC environment scripts and containers.
@@ -33,8 +33,7 @@ The codebase follows a clear prefixed structure:
 | **`01_run_pipeline.py`** | **Primary CLI entry point.** Orchestrates: stimulus loading → grid prediction → grid fit → final fit → output. |
 | **`S01_simulate_prf.py`** | Generates synthetic pRF timeseries with ground-truth CSS parameters, additive noise, baseline, and linear trend. Supports GPU batch forward model (CuPy). Default: 100,000 voxels. |
 | **`S02_run_simulation_fit.py`** | Fits simulated data from S01 and validates against ground truth. Comparison figures show identity scatter for spatial parameters (x, y, σ, n, θ, ρ) and **distributions** for R² and beta. All outputs labeled with `Ns`. |
-| **`D01_analyze_snr.py`** | Computes per-vertex SNR metrics on real surface data: FFT power spectra, relative low-frequency power histograms, and quantile-stratified signal profiles. Correlates with existing grid-fit estimates if present. |
-| **`D02_snr_vs_r2_simulation.py`** | Computes **Task-band Fractional Spectral Power (TFSP)** on simulated timeseries and correlates with pRF fit R². TFSP band is stimulus-derived (sweep period → fundamental frequency), uses FFT amplitude (not power), and applies a drift floor. Outputs scatter, regression, and summary panel figures. |
+| **`D01_analyze_snr.py`** | Unified diagnostic tool for TFSP analysis. `--mode subject` (default): real surface GIFTI data — sample signal traces, amplitude spectra, TFSP histogram, quantile signal profiles, and TFSP vs R² scatter when fit estimates are present. `--mode simulation`: loads pkl timeseries from S01 and correlates TFSP with pRF fit R² from S02, with scatter, quintile bar, and summary panel figures. |
 
 ---
 
@@ -92,17 +91,22 @@ All figures use dark mode (black background, cyan/magenta accents).
 ### 3. SNR Diagnostics (`D01` & `D02`)
 
 ```bash
-# D01 — SNR analysis on real surface data
-python D01_analyze_snr.py MAM0606
+# Subject mode — real surface data (default)
+python D01_analyze_snr.py --subject MAM0606
+python D01_analyze_snr.py --subject MAM0606 --sweep-period 25.0
 
-# D02 — Task-band FSP vs R² on simulation data
-python D02_snr_vs_r2_simulation.py --grid-size 50
-
-# D02 with custom sweep period
-python D02_snr_vs_r2_simulation.py --grid-size 50 --sweep-period 25.0
+# Simulation mode — S01 pkl timeseries + S02 .npy fit outputs
+python D01_analyze_snr.py --mode simulation --grid-size 50
+python D01_analyze_snr.py --mode simulation --grid-size 50 --sweep-period 25.0
 ```
 
-**D02 outputs** are saved to `Simulation/figures/testing_snr/`:
+**Subject mode outputs** → `{popeyeFitDir}/snrtesting/`:
+* `signal_spectrum_sample_{hemi}.png` — sample signal + annotated amplitude spectrum
+* `tfsp_histogram_{hemi}.png` — TFSP distribution per hemisphere
+* `quantiles_signals_{hemi}.png` — signal traces stratified by TFSP quintile
+* `tfsp_vs_r2_{hemi}.png` — TFSP vs R² scatter + quintile bar (if fit estimates found)
+
+**Simulation mode outputs** → `Simulation/figures/testing_snr/`:
 * `tfsp_vs_r2_{tag}.png` — scatter + regression + marginal histograms
 * `tfsp_summary_panel_{tag}.png` — scatter | quintile bar | TFSP hist | R² hist
 
