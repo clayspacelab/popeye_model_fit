@@ -12,7 +12,7 @@ The codebase follows a clear prefixed structure:
 
 * **`H01` – `H06` (Helper Modules)**: Core library modules. Imported by main scripts; never executed directly.
 * **`01_run_pipeline.py` (Main Pipeline)**: Primary entry point for fitting real subject data.
-* **`S01` – `S02` (Simulation Tools)**: Synthetic data generation and model validation.
+* **`S01` – `S03` (Simulation Tools)**: Synthetic data generation, model validation, and grid-size sweeps.
 * **`D01` (Diagnostics)**: Data quality analysis and SNR characterization tools.
 * **`notebooks/`**: Interactive exploration and debugging notebooks.
 * **`deprecated/`**: Legacy files, volume-only fitters, and superseded prototypes.
@@ -33,6 +33,7 @@ The codebase follows a clear prefixed structure:
 | **`01_run_pipeline.py`** | **Primary CLI entry point.** Orchestrates: stimulus loading → grid prediction → grid fit → final fit → output. |
 | **`S01_simulate_prf.py`** | Generates synthetic pRF timeseries with ground-truth CSS parameters, additive noise, baseline, and linear trend. Supports GPU batch forward model (CuPy). Default: 100,000 voxels. |
 | **`S02_run_simulation_fit.py`** | Fits simulated data from S01 and validates against ground truth. Comparison figures show identity scatter for spatial parameters (x, y, σ, n, θ, ρ) and **distributions** for R² and beta. All outputs labeled with `Ns`. |
+| **`S03_gridsize_sweep.py`** | Sweeps grid density `Ns` (default 10→100 by 10) over the S01 simulated data, running grid + final fit for each. Uses a **finer CSS exponent grid (10 values vs 4)** and defaults to **GPU**. Produces "accuracy vs Ns" (per-parameter correlation with ground truth), "R² vs Ns", and "runtime vs Ns" figures plus a `sweep_metrics.npz`. Grid-prediction caches are S03-specific (`gridfit_S03_Ns{Ns}_n{n_res}.npy`) so they never collide with S02's. |
 | **`D01_analyze_snr.py`** | Unified diagnostic tool for TFSP analysis. `--mode subject` (default): real surface GIFTI data — sample signal traces, amplitude spectra, TFSP histogram, quantile signal profiles, and TFSP vs R² scatter when fit estimates are present. `--mode simulation`: loads pkl timeseries from S01 and correlates TFSP with pRF fit R² from S02, with scatter, quintile bar, and summary panel figures. |
 
 ---
@@ -85,6 +86,25 @@ Comparison figures show:
 * **Distribution histogram** (fitted values) for: `R²` and `beta`
 
 All figures use dark mode (black background, cyan/magenta accents).
+
+#### Grid-size sweep (`S03`)
+
+```bash
+# Sweep Ns = 10, 20, ..., 100 (GPU by default), grid + final fit
+python S03_gridsize_sweep.py
+
+# Custom sweep, subset of voxels, CPU only
+python S03_gridsize_sweep.py --grid-sizes 20 40 60 80 100 --n-voxels 5000 --no-gpu
+
+# Grid fit only (skip final refinement)
+python S03_gridsize_sweep.py --skip-final-fit
+```
+
+Outputs → `Simulation/figures/gridsize_sweep/`:
+* `accuracy_vs_Ns.png` — Pearson correlation (fitted vs ground truth) vs Ns, one panel per parameter (`theta, rho, sigma, n, x, y`), grid & final fit.
+* `r2_vs_Ns.png` — mean fitted R² as a function of Ns.
+* `runtime_vs_Ns.png` — grid-fit / final-fit wall-clock time and constrained grid-point count vs Ns.
+* `sweep_metrics.npz` — raw metrics for all Ns.
 
 ---
 
