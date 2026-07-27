@@ -78,6 +78,12 @@ def parse_args():
                         help='Disable GPU acceleration (GPU is used by default)')
     parser.add_argument('--skip-final-fit', action='store_true',
                         help='Run coarse grid fit only; skip the final fit step')
+    parser.add_argument('--n-iter', type=int, default=300,
+                        help='Adam iterations per sub-batch in the GPU final fit (default: 300)')
+    parser.add_argument('--lr', type=float, default=0.005,
+                        help='Adam learning rate for the GPU final fit (default: 0.005)')
+    parser.add_argument('--sub-batch', type=int, default=None,
+                        help='Voxels per GPU sub-batch (default: auto-size from free VRAM)')
     parser.set_defaults(use_gpu=True)
     return parser.parse_args()
 
@@ -139,7 +145,7 @@ def compute_metrics(trueFit_data, fitted_data):
 
 
 def fit_one_gridsize(Ns, stimulus, timeseries_data, indices, nvoxs, p, use_gpu,
-                     skip_final_fit):
+                     skip_final_fit, n_iter=300, lr=0.005, sub_batch=None):
     """Run grid (+ optional final) fit for a single Ns. Returns a results dict."""
     print(f'\n{"="*70}\n=== Ns = {Ns} ===\n{"="*70}')
 
@@ -184,7 +190,8 @@ def fit_one_gridsize(Ns, stimulus, timeseries_data, indices, nvoxs, p, use_gpu,
         print('Starting final fit...')
         RF_fFit = np.empty((1, 1, nvoxs, 9))
         RF_fFit = get_final_estims(RF_gFit, param_width, timeseries_data,
-                                   stimulus, RF_fFit, indices, use_gpu=use_gpu)
+                                   stimulus, RF_fFit, indices, use_gpu=use_gpu,
+                                   n_iter=n_iter, lr=lr, sub_batch=sub_batch)
         RF_fFit = RF_fFit.reshape(1, 1, nvoxs, 9)
         t_final = time.perf_counter()
         result['final_fit_time'] = t_final - t_grid
@@ -352,6 +359,10 @@ def _run(args, codeStartTime, p, params):
     print(f'n-grid:      {N_GRID_VALUES} ({len(N_GRID_VALUES)} values)')
     print(f'GPU:         {"enabled" if args.use_gpu else "disabled"}')
     print(f'Final fit:   {"skipped" if args.skip_final_fit else "enabled"}')
+    if not args.skip_final_fit:
+        print(f'  n_iter:    {args.n_iter}')
+        print(f'  lr:        {args.lr}')
+        print(f'  sub_batch: {args.sub_batch if args.sub_batch is not None else "auto"}')
     print()
 
     # Detrend once.
@@ -377,7 +388,8 @@ def _run(args, codeStartTime, p, params):
     for Ns in args.grid_sizes:
         results.append(
             fit_one_gridsize(Ns, stimulus, timeseries_data, indices, nvoxs, p,
-                             args.use_gpu, args.skip_final_fit)
+                             args.use_gpu, args.skip_final_fit,
+                             n_iter=args.n_iter, lr=args.lr, sub_batch=args.sub_batch)
         )
 
     # Outputs.

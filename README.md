@@ -162,6 +162,10 @@ Both `H05_grid_fit.py` and `H06_final_fit.py` support `--use-gpu` via CuPy.
 
 **Final fit (H06) GPU strategy:**
 - Batched Adam optimizer; all voxels optimized simultaneously in CuPy
+- **Auto-sized sub-batch**: fills available VRAM instead of a fixed 2000, keeping the GPU saturated and cutting Python/kernel-launch overhead (the dominant cost). Override with `sub_batch=`.
+- **Fast FFT length**: the HRF-convolution FFT is zero-padded up to a 5-smooth length (identical result, faster cuFFT).
+- **Cached-response gradient**: the exponent (`n`) finite-difference perturbation reuses the linear neural response — no RF rebuild or matmul — since only the nonlinearity depends on `n`.
+- Tunable `n_iter` (Adam steps) and `lr` (learning rate); exposed via `S03_gridsize_sweep.py` (`--n-iter`, `--lr`, `--sub-batch`) so the iteration-count/accuracy tradeoff can be swept.
 - Falls back to CPU L-BFGS-B if CuPy is unavailable
 
 Tested on: NVIDIA Titan Xp (12 GB VRAM), CUDA 12.2.

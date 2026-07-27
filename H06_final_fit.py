@@ -116,7 +116,7 @@ def FinalFit_Vox(args):
 # ---------------------------------------------------------------------------
 
 def get_final_estims(gFit, param_width, timeseries_data, stimulus, fFit, indices,
-                     use_gpu=False):
+                     use_gpu=False, n_iter=300, lr=0.005, sub_batch=None):
     """
     Run gradient-descent refinement for all voxels/vertices.
 
@@ -146,6 +146,13 @@ def get_final_estims(gFit, param_width, timeseries_data, stimulus, fFit, indices
         Indices into gFit for each voxel.
     use_gpu : bool
         If True, attempt CuPy GPU path.
+    n_iter : int
+        Adam iterations per sub-batch (GPU path only; default 300).
+    lr : float
+        Adam learning rate (GPU path only; default 0.005).
+    sub_batch : int or None
+        Voxels per GPU sub-batch. None (default) sizes it automatically from
+        free VRAM. GPU path only.
 
     Returns
     -------
@@ -159,7 +166,8 @@ def get_final_estims(gFit, param_width, timeseries_data, stimulus, fFit, indices
             import cupy as cp
             print("GPU Final Fit: CuPy detected, using batch Adam optimizer.")
             return _get_final_estims_gpu(
-                gFit, timeseries_data, stimulus, indices, nvoxs
+                gFit, timeseries_data, stimulus, indices, nvoxs,
+                n_iter=n_iter, lr=lr, sub_batch=sub_batch
             )
         except ImportError:
             print("CuPy not available — falling back to CPU path.")
@@ -206,15 +214,17 @@ def get_final_estims(gFit, param_width, timeseries_data, stimulus, fFit, indices
 # ---------------------------------------------------------------------------
 
 def _get_final_estims_gpu(gFit, timeseries_data, stimulus, indices, nvoxs,
-                           n_iter=300, lr=0.005, sub_batch=2000):
+                           n_iter=300, lr=0.005, sub_batch=None):
     """
     GPU-accelerated batch final fit using CuPy + Adam.
 
     All voxels in a sub-batch are optimized simultaneously:
       - Batch Gaussian RF:  (N, H*W) computed at once
       - Neural response:    (N, H*W) @ (H*W, T)  → (N, T)  one GPU matmul
-      - HRF convolution:    batch FFT  (N, nfft)
-      - Finite-diff grads:  4 extra forward passes, each handling all N voxels
+      - HRF convolution:    batch FFT  (N, nfft), nfft rounded up to a fast length
+      - Finite-diff grads:  4 perturbations. The n-perturbation reuses the cached
+        linear neural response (RF + matmul unchanged when only the exponent
+        moves), so it costs only the cheap nonlinearity + HRF conv.
       - Adam update:        (N, 4) parameter matrix updated in one step
 
     Parameters
@@ -223,12 +233,12 @@ def _get_final_estims_gpu(gFit, timeseries_data, stimulus, indices, nvoxs,
         Adam iterations per sub-batch (default 300).
     lr : float
         Adam learning rate (default 0.005).
-    sub_batch : int
-        Voxels per GPU sub-batch to fit within GPU memory (default 2000).
-        Titan Xp 12GB: 2000 × ~10k-pixel RF uses ~160MB — well within budget.
+    sub_batch : int or None
+        Voxels per GPU sub-batch. None (default) sizes it automatically from
+        free VRAM (larger batches keep the GPU saturated and cut Python/kernel
+        launch overhead — the dominant cost at the old fixed 2000).
     """
     import cupy as cp
-    from cupyx.scipy.signal import fftconvolve as cp_fftconvolve
 
     max_deg = float(stimulus.deg_x0.max())
     nT      = stimulus.stim_arr.shape[2]
@@ -244,32 +254,43 @@ def _get_final_estims_gpu(gFit, timeseries_data, stimulus, indices, nvoxs,
     deg_x_flat   = deg_x_gpu.ravel()                                      # (H*W,)
     deg_y_flat   = deg_y_gpu.ravel()                                      # (H*W,)
     dx           = float(cp.diff(deg_x_gpu[0, 0:2])[0])
+    HW           = deg_x_flat.size
 
-    # Pre-compute HRF FFT for batch convolution
+    # Pre-compute HRF FFT for batch convolution. Rounding nfft UP to a
+    # 5-smooth "fast" length only zero-pads the transform, so the linear
+    # convolution result in [:nT] is bit-for-bit the same — but cuFFT runs
+    # much faster on fast lengths than on the raw (nT + len(hrf) - 1).
     nfft         = nT + len(hrf_cpu) - 1
+    try:
+        from cupyx.scipy.fft import next_fast_len
+        nfft = int(next_fast_len(nfft))
+    except Exception:
+        pass
     hrf_fft      = cp.fft.rfft(hrf_gpu, n=nfft)                          # (nfft//2+1,)
+
+    # Auto-size the sub-batch from free VRAM when not overridden. Peak memory is
+    # dominated by a few (B, H*W) float32 temporaries in the forward pass; use a
+    # generous per-voxel estimate and a 60% headroom cap for safety.
+    if sub_batch is None:
+        free_bytes, _ = cp.cuda.Device().mem_info
+        bytes_per_vox = HW * 4 * 6          # ~3 (B,H*W) temporaries + fft + margin
+        sub_batch = int((free_bytes * 0.6) / max(bytes_per_vox, 1))
+        sub_batch = int(np.clip(sub_batch, 500, nvoxs))
 
     # Bounds for parameter clipping
     p_lo = cp.array([-max_deg * 2, -max_deg * 2, 0.001, 0.001],          dtype=cp.float32)
     p_hi = cp.array([ max_deg * 2,  max_deg * 2, max_deg * 2, 2.0],      dtype=cp.float32)
 
     # ------------------------------------------------------------------
-    def _forward_batch(params):
-        """
-        Batch CSS pRF forward model.
+    def _neural_response(params):
+        """Linear (pre-nonlinearity) neural response: depends on x, y, sigma only.
 
-        Parameters
-        ----------
-        params : cupy ndarray, shape (N, 4)  — [x, y, sigma, n]
-
-        Returns
-        -------
-        pred : cupy ndarray, shape (N, T)
+        Returns (N, T). Split out from the forward model so the exponent-gradient
+        perturbation can reuse it without rebuilding the RF or redoing the matmul.
         """
         x     = params[:, 0]   # (N,)
         y     = params[:, 1]
         sigma = params[:, 2]
-        n     = params[:, 3]
 
         # Batch 2D Gaussian RF: (N, H*W)
         dx_diff = deg_x_flat[None, :] - x[:, None]    # (N, H*W)
@@ -278,9 +299,14 @@ def _get_final_estims_gpu(gFit, timeseries_data, stimulus, indices, nvoxs,
         rf     /= (2.0 * np.pi * sigma[:, None]**2) / (dx**2)
 
         # Neural response: (N, H*W) @ (H*W, T) → (N, T)
-        response = rf @ stim_flat
+        return rf @ stim_flat
 
-        # CSS compressive nonlinearity
+    def _forward_from_response(response, n):
+        """Apply CSS nonlinearity + HRF conv + PSC normalize to a linear response.
+
+        response : (N, T) linear neural response
+        n        : (N,)   CSS exponent
+        """
         response = cp.abs(response) ** n[:, None]
 
         # Batch HRF convolution via FFT
@@ -292,19 +318,33 @@ def _get_final_estims_gpu(gFit, timeseries_data, stimulus, indices, nvoxs,
         pred = (pred - mu) / (cp.abs(mu) + 1e-8)
         return pred
 
-    def _sse_batch(params, data):
-        """SSE for each voxel: (N,)."""
-        pred = _forward_batch(params)
-        return cp.sum((data - pred)**2, axis=1)
+    def _forward_batch(params):
+        """Batch CSS pRF forward model. params (N, 4) [x, y, sigma, n] → pred (N, T)."""
+        return _forward_from_response(_neural_response(params), params[:, 3])
 
     def _grad_batch(params, data, eps=1e-4):
-        """Finite-difference gradients, vectorized across all N voxels: (N, 4)."""
-        loss0 = _sse_batch(params, data)                                  # (N,)
+        """Finite-difference gradients, vectorized across all N voxels: (N, 4).
+
+        The x/y/sigma perturbations each need a full forward pass (the RF and
+        matmul change). The n perturbation reuses the cached linear response —
+        only the nonlinearity + HRF conv are recomputed — saving one RF build
+        and one (N, H*W)@(H*W, T) matmul per gradient evaluation.
+        """
+        resp0 = _neural_response(params)                                  # (N, T)
+        pred0 = _forward_from_response(resp0, params[:, 3])
+        loss0 = cp.sum((data - pred0)**2, axis=1)                         # (N,)
+
         grads = cp.empty_like(params)
-        for p in range(4):
-            p_plus      = params.copy()
+        for p in range(3):   # x, y, sigma — RF/matmul change, full recompute
+            p_plus       = params.copy()
             p_plus[:, p] += eps
-            grads[:, p]  = (_sse_batch(p_plus, data) - loss0) / eps
+            pred_p        = _forward_from_response(_neural_response(p_plus),
+                                                   p_plus[:, 3])
+            grads[:, p]   = (cp.sum((data - pred_p)**2, axis=1) - loss0) / eps
+
+        # n (exponent) — reuse resp0; only nonlinearity + conv recomputed
+        pred_n      = _forward_from_response(resp0, params[:, 3] + eps)
+        grads[:, 3] = (cp.sum((data - pred_n)**2, axis=1) - loss0) / eps
         return grads
     # ------------------------------------------------------------------
 
