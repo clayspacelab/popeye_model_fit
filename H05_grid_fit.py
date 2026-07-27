@@ -256,81 +256,119 @@ def _compute_rmse_gpu(data, predictor_series):
 def _get_grid_estims_gpu(grid_preds, grid_space, timeseries_data, gFit,
                          indices, batch_size=2000):
     """
-    GPU-accelerated grid fitting via high-throughput cuBLAS matrix multiplication.
+    GPU-accelerated grid fitting with dynamic dual-tiled memory management.
 
-    Computes OLS regression fits for all voxel-grid combinations in parallel:
-        Y (B x T) @ X^T (T x G) -> S_xy (B x G) matrix product on GPU.
+    With large grids (e.g. Ns=100 -> 2.1M points), the S_xy result matrix
+    (B_vox x G) is the dominant allocation. For G=2.1M and B_vox=2000:
+        2000 x 2.1M x 4 bytes = 16.86 GB -- exceeds any consumer GPU.
+
+    Fix: query free GPU memory at runtime and compute safe tile sizes for
+    BOTH the voxel (B_vox) and grid (G_chunk) dimensions so peak usage
+    stays within budget regardless of grid size.
+
+    Strategy:
+      - X_centered (G, T) and S_xx (G,) stay resident throughout
+      - Voxels tiled into B_vox-sized batches
+      - Grid tiled into G_chunk-sized chunks for the matmul
+      - Running argmin tracks best-per-voxel without ever holding full (B, G)
     """
     import cupy as cp
 
-    nvoxs = len(timeseries_data)
+    nvoxs  = len(timeseries_data)
     ngrids = len(grid_preds)
-    nTRs = timeseries_data.shape[1]
+    nTRs   = timeseries_data.shape[1]
 
-    print(f"GPU Processing: {nvoxs} voxels, {ngrids} grid points, batch_size={batch_size}")
+    # ── Query free memory and compute safe tile sizes ─────────────────────────
+    free_bytes, total_bytes = cp.cuda.runtime.memGetInfo()
 
-    # Transfer data to GPU
-    timeseries_gpu = cp.asarray(timeseries_data, dtype=cp.float32)  # (B, T)
-    grid_preds_gpu = cp.asarray(grid_preds, dtype=cp.float32)       # (G, T)
+    # Resident arrays: X_centered (G, T) + S_xx (G,) + timeseries_gpu (N, T)
+    resident_bytes = (ngrids * nTRs + ngrids + nvoxs * nTRs) * 4
+    safety_margin  = 512 * 1024**2   # 512 MB headroom
+    usable_bytes   = max(free_bytes - resident_bytes - safety_margin, 0)
 
-    # Precompute grid summary statistics on GPU once
-    grid_means = cp.mean(grid_preds_gpu, axis=1, keepdims=True)     # (G, 1)
+    # Per-tile peak: S_xy (B, G_chunk) + beta1 (B, G_chunk) + sse (B, G_chunk)
+    # = 3 * B * G_chunk * 4 bytes.  Budget: usable_bytes
+    max_elements = usable_bytes // (3 * 4)
+
+    # Choose G_chunk <= ngrids; B_vox fills remaining budget
+    G_chunk = min(ngrids, max(256, int(max_elements ** 0.5)))
+    B_vox   = min(nvoxs,  max(1,   int(max_elements // G_chunk)))
+
+    print(f"GPU Grid Fit : {nvoxs:,} voxels | {ngrids:,} grid pts | "
+          f"B_vox={B_vox} | G_chunk={G_chunk:,} | "
+          f"free={free_bytes/1e9:.1f} GB / {total_bytes/1e9:.1f} GB")
+
+    # ── Transfer to GPU ───────────────────────────────────────────────────────
+    timeseries_gpu = cp.asarray(timeseries_data, dtype=cp.float32)  # (N, T)
+    grid_preds_gpu = cp.asarray(grid_preds,      dtype=cp.float32)  # (G, T)
+
+    grid_means = grid_preds_gpu.mean(axis=1, keepdims=True)
     X_centered = grid_preds_gpu - grid_means                        # (G, T)
-    S_xx = cp.sum(X_centered**2, axis=1)                            # (G,)
+    S_xx       = (X_centered ** 2).sum(axis=1)                     # (G,)
     S_xx[S_xx == 0] = 1e-8
+    del grid_preds_gpu, grid_means
 
-    start = 0
-    pbar = tqdm(total=nvoxs, desc="GPU Matrix Processing", dynamic_ncols=True)
+    # ── Dual-tiled fitting ────────────────────────────────────────────────────
+    pbar = tqdm(total=nvoxs, desc="GPU Grid Fit", dynamic_ncols=True)
 
-    while start < nvoxs:
-        end = min(start + batch_size, nvoxs)
-        batch_y = timeseries_gpu[start:end]                         # (B_sub, T)
-        b_sub = batch_y.shape[0]
+    for v_start in range(0, nvoxs, B_vox):
+        v_end   = min(v_start + B_vox, nvoxs)
+        batch_y = timeseries_gpu[v_start:v_end]              # (B, T)
+        B       = batch_y.shape[0]
 
-        # Center batch voxels
-        y_means = cp.mean(batch_y, axis=1, keepdims=True)            # (B_sub, 1)
-        Y_centered = batch_y - y_means                              # (B_sub, T)
-        S_yy = cp.sum(Y_centered**2, axis=1, keepdims=True)          # (B_sub, 1)
+        y_mean    = batch_y.mean(axis=1, keepdims=True)
+        Y_centered = batch_y - y_mean                         # (B, T)
+        S_yy      = (Y_centered ** 2).sum(axis=1)            # (B,)
 
-        # Matrix multiplication via cuBLAS: S_xy = Y_centered @ X_centered.T
-        S_xy = cp.dot(Y_centered, X_centered.T)                     # (B_sub, G)
+        # Running best across G_chunks
+        best_sse = cp.full(B, cp.inf, dtype=cp.float32)
+        best_idx = cp.zeros(B,       dtype=cp.int64)
 
-        # OLS slope: beta1 = S_xy / S_xx
-        betas1 = S_xy / S_xx[cp.newaxis, :]                          # (B_sub, G)
+        for g_start in range(0, ngrids, G_chunk):
+            g_end     = min(g_start + G_chunk, ngrids)
+            Xc_chunk  = X_centered[g_start:g_end]            # (Gc, T)
+            Sxx_chunk = S_xx[g_start:g_end]                  # (Gc,)
 
-        # SSE = S_yy - beta1 * S_xy
-        sse = S_yy - (betas1 * S_xy)                                 # (B_sub, G)
-        rmses = sse / nTRs
+            # (B, T) @ (T, Gc) -> (B, Gc)
+            S_xy  = Y_centered @ Xc_chunk.T
+            beta1 = S_xy / Sxx_chunk[cp.newaxis, :]
+            sse   = S_yy[:, None] - beta1 * S_xy
 
-        # Mask out negative slope estimates (beta1 < 0 -> invalid pRF fit)
-        rmses[betas1 < 0] = 1e9
+            # Invalid fits: negative slope
+            sse[beta1 < 0] = cp.inf
 
-        # Best grid index for each voxel in batch
-        best_grid_indices = cp.argmin(rmses, axis=1)                 # (B_sub,)
+            # Update running argmin
+            chunk_best_sse = sse.min(axis=1)                 # (B,)
+            chunk_best_idx = sse.argmin(axis=1)              # (B,) local
+            improved       = chunk_best_sse < best_sse
+            best_sse       = cp.where(improved, chunk_best_sse, best_sse)
+            best_idx       = cp.where(improved,
+                                      chunk_best_idx + g_start,
+                                      best_idx)
 
-        # Compute full overload estimate for best grid matches
-        best_grid_indices_cpu = cp.asnumpy(best_grid_indices)
-        for i in range(b_sub):
-            best_idx = int(best_grid_indices_cpu[i])
-            best_grid_estim = grid_space[best_idx]
-            best_grid_pred = grid_preds_gpu[best_idx]
-            voxel_data = batch_y[i]
+            del S_xy, beta1, sse, Xc_chunk, Sxx_chunk
 
-            result = _overload_estimate_gpu(best_grid_estim, voxel_data, best_grid_pred)
-
-            idx = indices[start + i]
+        # Overload estimate for each voxel in batch
+        best_idx_cpu = cp.asnumpy(best_idx)
+        for i in range(B):
+            b_idx  = int(best_idx_cpu[i])
+            result = _overload_estimate_gpu(
+                grid_space[b_idx],
+                batch_y[i],
+                X_centered[b_idx],   # centered pred; overload_estimate re-fits OLS
+            )
+            idx = indices[v_start + i]
             if isinstance(idx, (list, tuple)):
                 gFit[idx[0], idx[1], idx[2], :] = result
             else:
                 gFit[idx, :] = result
 
-        start = end
-        pbar.update(b_sub)
+        del Y_centered, best_sse, best_idx
+        pbar.update(B)
 
     pbar.close()
 
-    # Free GPU memory
-    del timeseries_gpu, grid_preds_gpu, X_centered, S_xx
+    del timeseries_gpu, X_centered, S_xx
     cp.get_default_memory_pool().free_all_blocks()
 
     return gFit
