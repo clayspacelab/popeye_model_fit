@@ -32,13 +32,11 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
 import nibabel as nib
 
 from itertools import product
 from concurrent.futures import ThreadPoolExecutor
-from scipy import stats
 
 from popeye.visual_stimulus import VisualStimulus
 
@@ -63,16 +61,19 @@ N_TFSP_BINS = 10
 # TFSP task-band period (seconds); matches S02.
 TFSP_SWEEP_PERIOD_S = 25.0
 
-# Parameters plotted as identity scatters in S02 (i.e. those with a meaningful
-# ground truth to correlate against). Index into the 9-element CSS estimate.
-CORR_PARAMS = [
-    ('theta', 0),
-    ('rho', 2),
-    ('sigma', 3),
-    ('n', 4),
-    ('x', 5),
-    ('y', 6),
-]
+# Column layout of the 9-element CSS estimate (ground truth uses the same layout):
+#   0 theta (polar angle, rad)  1 R² (model fit)  2 rho (ecc, deg)  3 sigma (deg)
+#   4 n (CSS exponent)          5 x (deg)         6 y (deg)         7 beta  8 baseline
+#
+# Parameters scored by *recovery error* (fitted vs ground truth), not correlation.
+# Pearson r is scale/offset-invariant (hides bias) and invalid for the circular
+# theta; position is scored as a 2D Euclidean distance and theta circularly.
+ERROR_PARAMS = ['position', 'theta', 'sigma', 'n']
+ERROR_UNITS = {'position': 'deg', 'theta': 'deg', 'sigma': 'deg', 'n': ''}
+
+# Parameters shown as fitted-vs-true identity scatters: (name, column, unit).
+SCATTER_PARAMS = [('rho', 2, 'deg'), ('theta', 0, 'deg'),
+                  ('sigma', 3, 'deg'), ('n', 4, '')]
 
 
 def parse_args():
@@ -145,25 +146,55 @@ def build_grid_space(stimulus, Ns):
     return grid_space, param_width
 
 
-def safe_pearsonr(true_vals, fit_vals):
-    """Pearson r over finite pairs; NaN if too few or degenerate."""
-    true_vals = np.asarray(true_vals, dtype=float).flatten()
-    fit_vals = np.asarray(fit_vals, dtype=float).flatten()
-    mask = np.isfinite(true_vals) & np.isfinite(fit_vals)
-    if mask.sum() < 3:
-        return np.nan
-    tv, fv = true_vals[mask], fit_vals[mask]
-    if np.std(tv) == 0 or np.std(fv) == 0:
-        return np.nan
-    return stats.pearsonr(tv, fv)[0]
+def circular_error_deg(theta_true, theta_fit):
+    """Signed angular error (fit − true) wrapped to [−180°, 180°].
+
+    Linear differences on polar angle are wrong across the 0↔2π boundary; the
+    arctan2(sin, cos) trick maps the difference back onto the shortest arc.
+    """
+    d = np.asarray(theta_fit, dtype=float) - np.asarray(theta_true, dtype=float)
+    return np.degrees(np.arctan2(np.sin(d), np.cos(d)))
+
+
+def per_voxel_errors(trueFit_data, fitted_data):
+    """Per-voxel error array for each ERROR_PARAMS entry.
+
+    position → Euclidean RF-center distance (deg, ≥0)
+    theta    → circular angular error (deg, signed, in [−180, 180])
+    sigma, n → signed error (fit − true), so median bias is meaningful
+    """
+    t = np.asarray(trueFit_data, dtype=float)
+    fdat = np.asarray(fitted_data, dtype=float)
+    return {
+        'position': np.hypot(fdat[:, 5] - t[:, 5], fdat[:, 6] - t[:, 6]),
+        'theta': circular_error_deg(t[:, 0], fdat[:, 0]),
+        'sigma': fdat[:, 3] - t[:, 3],
+        'n': fdat[:, 4] - t[:, 4],
+    }
 
 
 def compute_metrics(trueFit_data, fitted_data):
-    """Return (dict of param->Pearson r vs ground truth, mean R²)."""
-    corr = {name: safe_pearsonr(trueFit_data[:, idx], fitted_data[:, idx])
-            for name, idx in CORR_PARAMS}
+    """Return (per-voxel error dict, mean model-fit R²).
+
+    The error dict feeds every accuracy summary (MAE/RMSE/bias/IQR are derived
+    at plot time so voxel-level spread is preserved). ``mean_r2`` is the model's
+    own goodness-of-fit (col 1) — model quality, NOT parameter recovery.
+    """
+    errs = per_voxel_errors(trueFit_data, fitted_data)
     mean_r2 = float(np.nanmean(fitted_data[:, 1]))
-    return corr, mean_r2
+    return errs, mean_r2
+
+
+def _err_summary(err):
+    """(MAE, RMSE, median-bias, |err| q25, |err| q75) over finite entries."""
+    e = np.asarray(err, dtype=float)
+    e = e[np.isfinite(e)]
+    if e.size == 0:
+        return (np.nan, np.nan, np.nan, np.nan, np.nan)
+    ae = np.abs(e)
+    return (float(np.mean(ae)), float(np.sqrt(np.mean(e ** 2))),
+            float(np.median(e)), float(np.percentile(ae, 25)),
+            float(np.percentile(ae, 75)))
 
 
 def compute_tfsp_bins(tfsp, n_bins):
@@ -184,14 +215,14 @@ def compute_tfsp_bins(tfsp, n_bins):
     return bin_labels, bin_medians
 
 
-def compute_r2_by_bin(r2_vals, bin_labels, n_bins):
-    """Mean R² within each TFSP bin: (n_bins,), NaN for empty bins."""
-    r2_vals = np.asarray(r2_vals).flatten()
+def compute_error_by_bin(err_vals, bin_labels, n_bins):
+    """Median |error| within each TFSP bin: (n_bins,), NaN for empty bins."""
+    err_vals = np.abs(np.asarray(err_vals).flatten())
     out = np.full(n_bins, np.nan)
     for b in range(n_bins):
-        mask = (bin_labels == b) & np.isfinite(r2_vals)
+        mask = (bin_labels == b) & np.isfinite(err_vals)
         if mask.any():
-            out[b] = float(np.mean(r2_vals[mask]))
+            out[b] = float(np.median(err_vals[mask]))
     return out
 
 
@@ -253,10 +284,11 @@ def fit_from_preds(Ns, grid_space, param_width, grid_preds, prep_time,
     np.save(gfit_save_path, RF_gFit[0, 0, :, :])
     print(f'[Ns={Ns}] Grid-fit estimates saved to {gfit_save_path}')
 
-    grid_corr, grid_r2 = compute_metrics(trueFit_data_global, RF_gFit[0, 0, :, :])
+    grid_errs, grid_r2 = compute_metrics(trueFit_data_global, RF_gFit[0, 0, :, :])
     result['grid'] = {
-        'corr': grid_corr, 'mean_r2': grid_r2,
-        'r2_by_bin': compute_r2_by_bin(RF_gFit[0, 0, :, 1], bin_labels, n_bins),
+        'errs': grid_errs, 'mean_r2': grid_r2,
+        'err_by_bin': {name: compute_error_by_bin(grid_errs[name], bin_labels, n_bins)
+                       for name in ERROR_PARAMS},
     }
 
     # Final fit (optional).
@@ -275,10 +307,11 @@ def fit_from_preds(Ns, grid_space, param_width, grid_preds, prep_time,
         np.save(ffit_save_path, RF_fFit[0, 0, :, :])
         print(f'[Ns={Ns}] Final-fit estimates saved to {ffit_save_path}')
 
-        final_corr, final_r2 = compute_metrics(trueFit_data_global, RF_fFit[0, 0, :, :])
+        final_errs, final_r2 = compute_metrics(trueFit_data_global, RF_fFit[0, 0, :, :])
         result['final'] = {
-            'corr': final_corr, 'mean_r2': final_r2,
-            'r2_by_bin': compute_r2_by_bin(RF_fFit[0, 0, :, 1], bin_labels, n_bins),
+            'errs': final_errs, 'mean_r2': final_r2,
+            'err_by_bin': {name: compute_error_by_bin(final_errs[name], bin_labels, n_bins)
+                           for name in ERROR_PARAMS},
         }
     else:
         result['final_fit_time'] = np.nan
@@ -320,23 +353,25 @@ def build_results_from_saved(grid_sizes, fit_dir, stimulus, trueFit_data,
         gfit = np.load(gpath(Ns))
         n = min(len(trueFit_data), len(gfit))
         grid_space, _ = build_grid_space(stimulus, Ns)
-        gc, gr2 = compute_metrics(trueFit_data[:n], gfit[:n])
+        gerrs, gr2 = compute_metrics(trueFit_data[:n], gfit[:n])
         res = {
             'Ns': Ns,
             'n_grid_points': len(grid_space),
             'grid_prep_time': np.nan,
             'grid_fit_time': np.nan,
             'final_fit_time': np.nan,
-            'grid': {'corr': gc, 'mean_r2': gr2,
-                     'r2_by_bin': compute_r2_by_bin(gfit[:n, 1], bin_labels[:n], n_bins)},
+            'grid': {'errs': gerrs, 'mean_r2': gr2,
+                     'err_by_bin': {name: compute_error_by_bin(gerrs[name], bin_labels[:n], n_bins)
+                                    for name in ERROR_PARAMS}},
             'final': None,
         }
         if use_final:
             ffit = np.load(fpath(Ns))
             m = min(len(trueFit_data), len(ffit))
-            fc, fr2 = compute_metrics(trueFit_data[:m], ffit[:m])
-            res['final'] = {'corr': fc, 'mean_r2': fr2,
-                            'r2_by_bin': compute_r2_by_bin(ffit[:m, 1], bin_labels[:m], n_bins)}
+            ferrs, fr2 = compute_metrics(trueFit_data[:m], ffit[:m])
+            res['final'] = {'errs': ferrs, 'mean_r2': fr2,
+                            'err_by_bin': {name: compute_error_by_bin(ferrs[name], bin_labels[:m], n_bins)
+                                           for name in ERROR_PARAMS}}
         results.append(res)
         print(f'[plot-only] Ns={Ns}: loaded ({"grid+final" if use_final else "grid"})')
 
@@ -344,26 +379,44 @@ def build_results_from_saved(grid_sizes, fit_dir, stimulus, trueFit_data,
 
 
 def plot_accuracy_vs_ns(results, save_path, skip_final_fit):
-    """One panel per correlated parameter: Pearson r vs Ns (grid & final)."""
+    """One panel per parameter: recovery error vs Ns (lower = better).
+
+    Solid line = MAE (mean |error|) with an IQR band for voxel-level spread;
+    grid (cyan) vs final (pink). For sigma/n the median *signed* bias is overlaid
+    (dashed) — this is what Pearson r structurally hid (a scaled/offset fit can
+    score r≈1 yet carry a large systematic bias).
+    """
     Ns_vals = [r['Ns'] for r in results]
 
-    f, axs = plt.subplots(2, 3, figsize=(18, 10))
-    axs = axs.flatten()
-    for ax, (name, _) in zip(axs, CORR_PARAMS):
-        grid_r = [r['grid']['corr'][name] for r in results]
-        ax.plot(Ns_vals, grid_r, '-o', color='#00e5ff', linewidth=1.6,
-                markersize=5, label='grid fit')
-        if not skip_final_fit:
-            final_r = [r['final']['corr'][name] for r in results]
-            ax.plot(Ns_vals, final_r, '-s', color='#ff4081', linewidth=1.6,
-                    markersize=5, label='final fit')
-        ax.set_title(f'{name}: corr(fitted, ground truth) vs Ns')
-        ax.set_xlabel('Grid size (Ns)')
-        ax.set_ylabel('Pearson r')
-        ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=9, framealpha=0.3)
+    stages = [('grid', 'grid fit', '#00e5ff', 'o')]
+    if not skip_final_fit:
+        stages.append(('final', 'final fit', '#ff4081', 's'))
 
-    f.suptitle('Parameter recovery vs grid size', fontsize=15)
+    f, axs = plt.subplots(2, 2, figsize=(14, 10))
+    axs = axs.flatten()
+    for ax, name in zip(axs, ERROR_PARAMS):
+        unit = ERROR_UNITS[name]
+        usuffix = f' ({unit})' if unit else ''
+        for key, label, color, marker in stages:
+            summ = [_err_summary(r[key]['errs'][name]) for r in results]
+            mae = [s[0] for s in summ]
+            q25 = [s[3] for s in summ]
+            q75 = [s[4] for s in summ]
+            ax.plot(Ns_vals, mae, '-', marker=marker, color=color, linewidth=1.8,
+                    markersize=5, label=f'{label} MAE')
+            ax.fill_between(Ns_vals, q25, q75, color=color, alpha=0.15)
+            if name in ('sigma', 'n'):
+                bias = [s[2] for s in summ]
+                ax.plot(Ns_vals, bias, '--', color=color, linewidth=1.2,
+                        alpha=0.85, label=f'{label} bias')
+        ax.axhline(0, color='#888888', linewidth=0.8, alpha=0.5)
+        ax.set_title(f'{name}: recovery error vs Ns{usuffix}')
+        ax.set_xlabel('Grid size (Ns)')
+        ax.set_ylabel(f'Error{usuffix}  (MAE; band = IQR)')
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=8, framealpha=0.3)
+
+    f.suptitle('Parameter-recovery error vs grid size (lower = better)', fontsize=15)
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close(f)
@@ -371,7 +424,12 @@ def plot_accuracy_vs_ns(results, save_path, skip_final_fit):
 
 
 def plot_r2_vs_ns(results, save_path, skip_final_fit):
-    """Mean fitted R² as a function of Ns (grid & final)."""
+    """Mean model-fit R² (goodness-of-fit) vs Ns (grid & final).
+
+    This is the model's own fit quality on the noisy data — how well the grid
+    density lets the fitter explain the timeseries — NOT parameter-recovery
+    accuracy (see accuracy_vs_Ns.png for that).
+    """
     Ns_vals = [r['Ns'] for r in results]
 
     f, ax = plt.subplots(figsize=(9, 6))
@@ -382,9 +440,9 @@ def plot_r2_vs_ns(results, save_path, skip_final_fit):
         final_r2 = [r['final']['mean_r2'] for r in results]
         ax.plot(Ns_vals, final_r2, '-s', color='#ff4081', linewidth=1.8,
                 markersize=6, label='final fit')
-    ax.set_title('Mean fitted R² vs grid size')
+    ax.set_title('Model fit R² (goodness-of-fit) vs grid size')
     ax.set_xlabel('Grid size (Ns)')
-    ax.set_ylabel('Mean R²')
+    ax.set_ylabel('Mean model-fit R²')
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=10, framealpha=0.3)
 
@@ -394,50 +452,137 @@ def plot_r2_vs_ns(results, save_path, skip_final_fit):
     print(f'R²-vs-Ns plot saved to {save_path}')
 
 
-def plot_r2_by_tfsp_bin(results, save_path, skip_final_fit, bin_medians, n_bins):
-    """Mean R² vs Ns, one line per TFSP (SNR) decile, colored by TFSP.
+def plot_error_by_tfsp_heatmap(results, save_path, skip_final_fit, bin_medians,
+                               n_bins):
+    """Median recovery error across Ns × TFSP (SNR) decile, per parameter.
 
-    Left panel: grid fit. Right panel: final fit (omitted if skipped). Each line
-    is a fixed set of voxels (binned by TFSP once), so the spread shows how SNR
-    gates recoverable R² and how that interacts with grid density.
+    Rows = fit stage (grid, and final if present); columns = ERROR_PARAMS. In
+    each heatmap x = Ns, y = TFSP decile (bottom = low SNR → top = high SNR,
+    tick-labelled by that bin's median TFSP), color = median |error| on a
+    reversed viridis so **dark = low error = good**. Unlike the old fit-R² line
+    plot (which trivially rose with SNR), this shows directly where extra grid
+    density still buys recovery accuracy across the SNR range.
     """
     Ns_vals = [r['Ns'] for r in results]
 
-    stages = [('grid', 'Grid-fit')]
+    stages = [('grid', 'grid fit')]
     if not skip_final_fit:
-        stages.append(('final', 'Final-fit'))
+        stages.append(('final', 'final fit'))
 
-    f, axs = plt.subplots(1, len(stages), figsize=(9 * len(stages), 6),
+    nrows, ncols = len(stages), len(ERROR_PARAMS)
+    f, axs = plt.subplots(nrows, ncols, figsize=(4.3 * ncols, 3.7 * nrows),
                           squeeze=False)
-    axs = axs[0]
+    ylabels = [f'{bin_medians[b]:.2f}' if np.isfinite(bin_medians[b]) else '—'
+               for b in range(n_bins)]
 
-    finite = np.isfinite(bin_medians)
-    vmin = float(np.nanmin(bin_medians)) if finite.any() else 0.0
-    vmax = float(np.nanmax(bin_medians)) if finite.any() else 1.0
-    norm = Normalize(vmin=vmin, vmax=vmax if vmax > vmin else vmin + 1e-6)
-    cmap = plt.cm.viridis
+    for si, (key, slabel) in enumerate(stages):
+        for pi, name in enumerate(ERROR_PARAMS):
+            ax = axs[si][pi]
+            # rows = TFSP bins (origin='lower' puts bin 0 = low SNR at bottom).
+            M = np.array([[r[key]['err_by_bin'][name][b] for r in results]
+                          for b in range(n_bins)])
+            im = ax.imshow(M, aspect='auto', origin='lower', cmap='viridis_r',
+                           interpolation='nearest')
+            ax.set_xticks(range(len(Ns_vals)))
+            ax.set_xticklabels(Ns_vals, fontsize=7)
+            ax.set_yticks(range(n_bins))
+            ax.set_yticklabels(ylabels, fontsize=6)
+            unit = ERROR_UNITS[name]
+            ax.set_title(f'{slabel}: {name}' + (f' ({unit})' if unit else ''),
+                         fontsize=10)
+            if si == nrows - 1:
+                ax.set_xlabel('Grid size (Ns)')
+            if pi == 0:
+                ax.set_ylabel('TFSP bin median\n(low → high SNR)', fontsize=8)
+            cb = f.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            cb.ax.tick_params(labelsize=6)
 
-    for ax, (key, label) in zip(axs, stages):
-        for b in range(n_bins):
-            if not np.isfinite(bin_medians[b]):
-                continue
-            y = [r[key]['r2_by_bin'][b] for r in results]
-            ax.plot(Ns_vals, y, '-o', markersize=4, linewidth=1.4,
-                    color=cmap(norm(bin_medians[b])))
-        ax.set_title(f'{label}: mean R² by TFSP decile vs Ns')
-        ax.set_xlabel('Grid size (Ns)')
-        ax.set_ylabel('Mean R²')
-        ax.grid(True, alpha=0.3)
-
-    sm = ScalarMappable(norm=norm, cmap=cmap)
-    sm.set_array([])
-    cbar = f.colorbar(sm, ax=list(axs), fraction=0.046, pad=0.04)
-    cbar.set_label('TFSP (bin median, low → high SNR)')
-
-    f.suptitle(f'R² by TFSP (SNR) decile vs grid size ({n_bins} bins)', fontsize=15)
+    f.suptitle('Median recovery error by TFSP (SNR) decile vs grid size '
+               '(dark = low error)', fontsize=14)
+    plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close(f)
-    print(f'R²-by-TFSP-bin plot saved to {save_path}')
+    print(f'Error-by-TFSP heatmap saved to {save_path}')
+
+
+def plot_recovery_scatter(results, save_path, fit_dir, trueFit_data, tfsp,
+                          skip_final_fit):
+    """Fitted-vs-true identity scatters at representative Ns.
+
+    Rows = SCATTER_PARAMS (rho, theta, sigma, n), columns = up to 3 representative
+    grid sizes (smallest / middle / largest swept). Points are colored by TFSP
+    (SNR); the pink dashed line is y=x, and each panel is annotated with MAE and
+    median bias. Fits are reloaded from the saved .npy estimates, so this works
+    identically in the live sweep and in --plot-only. Uses the final fit when
+    available, otherwise the grid fit.
+    """
+    uniq = sorted({r['Ns'] for r in results})
+    if not uniq:
+        return
+    reps = uniq if len(uniq) <= 3 else [uniq[0], uniq[len(uniq) // 2], uniq[-1]]
+
+    use_final = not skip_final_fit
+    stage = 'fFit' if use_final else 'gFit'
+    stage_label = 'final fit' if use_final else 'grid fit'
+
+    t = np.asarray(trueFit_data, dtype=float)
+    tfsp = np.asarray(tfsp, dtype=float).flatten()
+    finite_tfsp = tfsp[np.isfinite(tfsp)]
+    if finite_tfsp.size:
+        cnorm = Normalize(vmin=float(np.percentile(finite_tfsp, 1)),
+                          vmax=float(np.percentile(finite_tfsp, 99)))
+    else:
+        cnorm = Normalize(vmin=0.0, vmax=1.0)
+
+    nrows, ncols = len(SCATTER_PARAMS), len(reps)
+    f, axs = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4.2 * nrows),
+                          squeeze=False, layout='constrained')
+    last_sc = None
+    for j, Ns in enumerate(reps):
+        path = os.path.join(fit_dir, f'RF_ss5_{stage}_popeye_Ns{Ns}.npy')
+        if not os.path.exists(path):
+            path = os.path.join(fit_dir, f'RF_ss5_gFit_popeye_Ns{Ns}.npy')
+        if not os.path.exists(path):
+            continue
+        fit = np.load(path)
+        n = min(len(t), len(fit), len(tfsp))
+        tf, ff, c = t[:n], fit[:n], tfsp[:n]
+        for i, (name, col, unit) in enumerate(SCATTER_PARAMS):
+            ax = axs[i][j]
+            xt, yf = tf[:, col], ff[:, col]
+            if name == 'theta':
+                xt, yf = np.degrees(xt), np.degrees(yf)
+                err = circular_error_deg(tf[:, col], ff[:, col])
+            else:
+                err = yf - xt
+            m = np.isfinite(xt) & np.isfinite(yf)
+            last_sc = ax.scatter(xt[m], yf[m], c=c[m], s=6, cmap='viridis',
+                                 norm=cnorm, alpha=0.6, linewidths=0)
+            if m.any():
+                lo = float(min(xt[m].min(), yf[m].min()))
+                hi = float(max(xt[m].max(), yf[m].max()))
+                ax.plot([lo, hi], [lo, hi], color='#ff4081', linewidth=1.0,
+                        linestyle='--')
+            usuffix = f' ({unit})' if unit else ''
+            mae = float(np.nanmean(np.abs(err)))
+            bias = float(np.nanmedian(err))
+            ax.set_title(f'Ns={Ns}  {name}', fontsize=10)
+            ax.set_xlabel(f'true {name}{usuffix}')
+            ax.set_ylabel(f'fit {name}{usuffix}')
+            ax.text(0.05, 0.95, f'MAE={mae:.3g}\nbias={bias:.3g}',
+                    transform=ax.transAxes, va='top', ha='left', fontsize=8,
+                    color='#e0e0e0',
+                    bbox=dict(boxstyle='round', fc='#222222', ec='none', alpha=0.6))
+            ax.grid(True, alpha=0.2)
+
+    if last_sc is not None:
+        cb = f.colorbar(last_sc, ax=axs.ravel().tolist(), fraction=0.025, pad=0.02)
+        cb.set_label('TFSP (SNR)')
+    f.suptitle(f'Fitted vs true ({stage_label}); dashed = identity, color = TFSP',
+               fontsize=15)
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close(f)
+    print(f'Recovery-scatter plot saved to {save_path}')
 
 
 def plot_runtime_vs_ns(results, save_path, skip_final_fit):
@@ -473,27 +618,44 @@ def plot_runtime_vs_ns(results, save_path, skip_final_fit):
 
 
 def save_metrics(results, save_path, skip_final_fit, bin_medians):
-    """Persist the sweep metrics as a .npz for downstream inspection."""
-    Ns_vals = np.array([r['Ns'] for r in results])
+    """Persist the sweep metrics as a .npz for downstream inspection.
+
+    Per-parameter recovery error is stored as MAE / RMSE / median-bias vectors
+    (indexed by Ns) plus an (n_Ns × n_bins) median-|error|-by-TFSP-decile matrix
+    for each ERROR_PARAMS entry (``tfsp_bin_medians`` labels the bin axis).
+    """
+    def err_vecs(key, name):
+        summ = [_err_summary(r[key]['errs'][name]) for r in results]
+        return (np.array([s[0] for s in summ]),   # MAE
+                np.array([s[1] for s in summ]),   # RMSE
+                np.array([s[2] for s in summ]))   # median bias
+
     payload = {
-        'Ns': Ns_vals,
+        'Ns': np.array([r['Ns'] for r in results]),
         'n_grid_points': np.array([r['n_grid_points'] for r in results]),
         'grid_prep_time': np.array([r['grid_prep_time'] for r in results]),
         'grid_fit_time': np.array([r['grid_fit_time'] for r in results]),
         'final_fit_time': np.array([r['final_fit_time'] for r in results]),
         'grid_mean_r2': np.array([r['grid']['mean_r2'] for r in results]),
         'n_grid_values': np.array(N_GRID_VALUES),
-        # TFSP-binned R²: rows = Ns, cols = TFSP decile (bin_medians labels cols).
         'tfsp_bin_medians': np.asarray(bin_medians),
-        'grid_r2_by_bin': np.array([r['grid']['r2_by_bin'] for r in results]),
     }
-    for name, _ in CORR_PARAMS:
-        payload[f'grid_corr_{name}'] = np.array([r['grid']['corr'][name] for r in results])
+    for name in ERROR_PARAMS:
+        mae, rmse, bias = err_vecs('grid', name)
+        payload[f'grid_mae_{name}'] = mae
+        payload[f'grid_rmse_{name}'] = rmse
+        payload[f'grid_bias_{name}'] = bias
+        payload[f'grid_err_by_bin_{name}'] = np.array(
+            [r['grid']['err_by_bin'][name] for r in results])
         if not skip_final_fit:
-            payload[f'final_corr_{name}'] = np.array([r['final']['corr'][name] for r in results])
+            fmae, frmse, fbias = err_vecs('final', name)
+            payload[f'final_mae_{name}'] = fmae
+            payload[f'final_rmse_{name}'] = frmse
+            payload[f'final_bias_{name}'] = fbias
+            payload[f'final_err_by_bin_{name}'] = np.array(
+                [r['final']['err_by_bin'][name] for r in results])
     if not skip_final_fit:
         payload['final_mean_r2'] = np.array([r['final']['mean_r2'] for r in results])
-        payload['final_r2_by_bin'] = np.array([r['final']['r2_by_bin'] for r in results])
 
     np.savez(save_path, **payload)
     print(f'Sweep metrics saved to {save_path}')
@@ -639,10 +801,13 @@ def _run(args, codeStartTime, p, params):
 
     plot_accuracy_vs_ns(results, os.path.join(fig_dir, 'accuracy_vs_Ns.png'),
                         effective_skip)
+    plot_recovery_scatter(results, os.path.join(fig_dir, 'recovery_scatter.png'),
+                          fit_dir, trueFit_data, tfsp, effective_skip)
     plot_r2_vs_ns(results, os.path.join(fig_dir, 'r2_vs_Ns.png'),
                   effective_skip)
-    plot_r2_by_tfsp_bin(results, os.path.join(fig_dir, 'r2_by_tfsp_bin_vs_Ns.png'),
-                        effective_skip, bin_medians, N_TFSP_BINS)
+    plot_error_by_tfsp_heatmap(results,
+                               os.path.join(fig_dir, 'error_by_tfsp_heatmap.png'),
+                               effective_skip, bin_medians, N_TFSP_BINS)
     if args.plot_only:
         print('[plot-only] Runtime figure skipped — per-Ns timing is not persisted.')
     else:
