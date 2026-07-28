@@ -55,10 +55,8 @@ from S02_run_simulation_fit import TeeLogger, load_simulation_data
 # Finer CSS exponent grid for the sweep (10 values vs the default 4).
 N_GRID_VALUES = np.round(np.linspace(0.25, 1.0, 10), 4).tolist()
 
-# Number of TFSP (SNR) bins for the R²-vs-Ns-by-SNR figure.
-N_TFSP_BINS = 10
-
-# TFSP task-band period (seconds); matches S02.
+# TFSP task-band period (seconds); matches S02. TFSP (SNR) is used only to color
+# the recovery-scatter points.
 TFSP_SWEEP_PERIOD_S = 25.0
 
 # Column layout of the 9-element CSS estimate (ground truth uses the same layout):
@@ -197,35 +195,6 @@ def _err_summary(err):
             float(np.percentile(ae, 75)))
 
 
-def compute_tfsp_bins(tfsp, n_bins):
-    """Assign voxels to quantile (decile) TFSP bins.
-
-    Quantile bins give ~equal voxel counts per bin and are robust to the skewed
-    TFSP distribution. Returns (bin_labels (N,) in [0, n_bins-1], bin_medians
-    (n_bins,) median TFSP per bin; NaN for any empty bin).
-    """
-    tfsp = np.asarray(tfsp).flatten()
-    edges = np.quantile(tfsp, np.linspace(0, 1, n_bins + 1))
-    # Interior edges only → digitize yields labels 0..n_bins-1.
-    bin_labels = np.clip(np.digitize(tfsp, edges[1:-1]), 0, n_bins - 1)
-    bin_medians = np.array([
-        np.median(tfsp[bin_labels == b]) if np.any(bin_labels == b) else np.nan
-        for b in range(n_bins)
-    ])
-    return bin_labels, bin_medians
-
-
-def compute_error_by_bin(err_vals, bin_labels, n_bins):
-    """Median |error| within each TFSP bin: (n_bins,), NaN for empty bins."""
-    err_vals = np.abs(np.asarray(err_vals).flatten())
-    out = np.full(n_bins, np.nan)
-    for b in range(n_bins):
-        mask = (bin_labels == b) & np.isfinite(err_vals)
-        if mask.any():
-            out[b] = float(np.median(err_vals[mask]))
-    return out
-
-
 def prepare_gridpreds(Ns, stimulus, p, nTRs):
     """CPU stage: build the grid space and load-or-generate its grid predictions.
 
@@ -252,13 +221,12 @@ def prepare_gridpreds(Ns, stimulus, p, nTRs):
 
 def fit_from_preds(Ns, grid_space, param_width, grid_preds, prep_time,
                    stimulus, timeseries_data, indices, nvoxs, use_gpu,
-                   skip_final_fit, fit_dir, bin_labels, n_bins,
+                   skip_final_fit, fit_dir,
                    n_iter=300, lr=0.005, sub_batch=None):
     """GPU stage: grid fit (+ optional final fit) from precomputed predictions.
 
     Runs on the main thread so all CuPy work stays on a single device context.
     Grid- and final-fit estimates are saved to ``fit_dir`` (the S03 subfolder).
-    ``bin_labels`` assigns each voxel to a TFSP bin so per-bin mean R² is recorded.
     """
     print(f'\n{"="*70}\n=== Ns = {Ns} ===\n{"="*70}')
 
@@ -285,11 +253,7 @@ def fit_from_preds(Ns, grid_space, param_width, grid_preds, prep_time,
     print(f'[Ns={Ns}] Grid-fit estimates saved to {gfit_save_path}')
 
     grid_errs, grid_r2 = compute_metrics(trueFit_data_global, RF_gFit[0, 0, :, :])
-    result['grid'] = {
-        'errs': grid_errs, 'mean_r2': grid_r2,
-        'err_by_bin': {name: compute_error_by_bin(grid_errs[name], bin_labels, n_bins)
-                       for name in ERROR_PARAMS},
-    }
+    result['grid'] = {'errs': grid_errs, 'mean_r2': grid_r2}
 
     # Final fit (optional).
     if not skip_final_fit:
@@ -308,11 +272,7 @@ def fit_from_preds(Ns, grid_space, param_width, grid_preds, prep_time,
         print(f'[Ns={Ns}] Final-fit estimates saved to {ffit_save_path}')
 
         final_errs, final_r2 = compute_metrics(trueFit_data_global, RF_fFit[0, 0, :, :])
-        result['final'] = {
-            'errs': final_errs, 'mean_r2': final_r2,
-            'err_by_bin': {name: compute_error_by_bin(final_errs[name], bin_labels, n_bins)
-                           for name in ERROR_PARAMS},
-        }
+        result['final'] = {'errs': final_errs, 'mean_r2': final_r2}
     else:
         result['final_fit_time'] = np.nan
 
@@ -320,7 +280,7 @@ def fit_from_preds(Ns, grid_space, param_width, grid_preds, prep_time,
 
 
 def build_results_from_saved(grid_sizes, fit_dir, stimulus, trueFit_data,
-                             skip_final_fit, bin_labels, n_bins):
+                             skip_final_fit):
     """Reconstruct sweep results from previously saved grid/final fit .npy files.
 
     Used by --plot-only when a run was interrupted before the in-memory plotting
@@ -360,18 +320,14 @@ def build_results_from_saved(grid_sizes, fit_dir, stimulus, trueFit_data,
             'grid_prep_time': np.nan,
             'grid_fit_time': np.nan,
             'final_fit_time': np.nan,
-            'grid': {'errs': gerrs, 'mean_r2': gr2,
-                     'err_by_bin': {name: compute_error_by_bin(gerrs[name], bin_labels[:n], n_bins)
-                                    for name in ERROR_PARAMS}},
+            'grid': {'errs': gerrs, 'mean_r2': gr2},
             'final': None,
         }
         if use_final:
             ffit = np.load(fpath(Ns))
             m = min(len(trueFit_data), len(ffit))
             ferrs, fr2 = compute_metrics(trueFit_data[:m], ffit[:m])
-            res['final'] = {'errs': ferrs, 'mean_r2': fr2,
-                            'err_by_bin': {name: compute_error_by_bin(ferrs[name], bin_labels[:m], n_bins)
-                                           for name in ERROR_PARAMS}}
+            res['final'] = {'errs': ferrs, 'mean_r2': fr2}
         results.append(res)
         print(f'[plot-only] Ns={Ns}: loaded ({"grid+final" if use_final else "grid"})')
 
@@ -392,9 +348,24 @@ def plot_accuracy_vs_ns(results, save_path, skip_final_fit):
     if not skip_final_fit:
         stages.append(('final', 'final fit', '#ff4081', 's'))
 
-    f, axs = plt.subplots(2, 2, figsize=(14, 10))
+    # Panels: the four recovery-error parameters + a model-fit-R² panel (the old
+    # r2_vs_Ns figure, folded in here). 5 panels in a 2×3 grid; last is hidden.
+    panels = ERROR_PARAMS + ['r2']
+    f, axs = plt.subplots(2, 3, figsize=(18, 10))
     axs = axs.flatten()
-    for ax, name in zip(axs, ERROR_PARAMS):
+    for ax, name in zip(axs, panels):
+        if name == 'r2':
+            # Model goodness-of-fit (higher = better) — NOT recovery accuracy.
+            for key, label, color, marker in stages:
+                r2 = [r[key]['mean_r2'] for r in results]
+                ax.plot(Ns_vals, r2, '-', marker=marker, color=color,
+                        linewidth=1.8, markersize=5, label=label)
+            ax.set_title('model fit R² vs Ns (goodness-of-fit, higher = better)')
+            ax.set_xlabel('Grid size (Ns)')
+            ax.set_ylabel('Mean model-fit R²')
+            ax.grid(True, alpha=0.3)
+            ax.legend(fontsize=8, framealpha=0.3)
+            continue
         unit = ERROR_UNITS[name]
         usuffix = f' ({unit})' if unit else ''
         for key, label, color, marker in stages:
@@ -410,116 +381,36 @@ def plot_accuracy_vs_ns(results, save_path, skip_final_fit):
                 ax.plot(Ns_vals, bias, '--', color=color, linewidth=1.2,
                         alpha=0.85, label=f'{label} bias')
         ax.axhline(0, color='#888888', linewidth=0.8, alpha=0.5)
-        ax.set_title(f'{name}: recovery error vs Ns{usuffix}')
+        ax.set_title(f'{name}: recovery error vs Ns{usuffix} (lower = better)')
         ax.set_xlabel('Grid size (Ns)')
         ax.set_ylabel(f'Error{usuffix}  (MAE; band = IQR)')
         ax.grid(True, alpha=0.3)
         ax.legend(fontsize=8, framealpha=0.3)
 
-    f.suptitle('Parameter-recovery error vs grid size (lower = better)', fontsize=15)
+    # Hide unused panels (5 used of 6).
+    for ax in axs[len(panels):]:
+        ax.set_visible(False)
+
+    f.suptitle('Parameter recovery & fit quality vs grid size', fontsize=15)
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close(f)
     print(f'Accuracy-vs-Ns plot saved to {save_path}')
 
 
-def plot_r2_vs_ns(results, save_path, skip_final_fit):
-    """Mean model-fit R² (goodness-of-fit) vs Ns (grid & final).
-
-    This is the model's own fit quality on the noisy data — how well the grid
-    density lets the fitter explain the timeseries — NOT parameter-recovery
-    accuracy (see accuracy_vs_Ns.png for that).
-    """
-    Ns_vals = [r['Ns'] for r in results]
-
-    f, ax = plt.subplots(figsize=(9, 6))
-    grid_r2 = [r['grid']['mean_r2'] for r in results]
-    ax.plot(Ns_vals, grid_r2, '-o', color='#00e5ff', linewidth=1.8,
-            markersize=6, label='grid fit')
-    if not skip_final_fit:
-        final_r2 = [r['final']['mean_r2'] for r in results]
-        ax.plot(Ns_vals, final_r2, '-s', color='#ff4081', linewidth=1.8,
-                markersize=6, label='final fit')
-    ax.set_title('Model fit R² (goodness-of-fit) vs grid size')
-    ax.set_xlabel('Grid size (Ns)')
-    ax.set_ylabel('Mean model-fit R²')
-    ax.grid(True, alpha=0.3)
-    ax.legend(fontsize=10, framealpha=0.3)
-
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    plt.close(f)
-    print(f'R²-vs-Ns plot saved to {save_path}')
-
-
-def plot_error_by_tfsp_heatmap(results, save_path, skip_final_fit, bin_medians,
-                               n_bins):
-    """Median recovery error across Ns × TFSP (SNR) decile, per parameter.
-
-    Rows = fit stage (grid, and final if present); columns = ERROR_PARAMS. In
-    each heatmap x = Ns, y = TFSP decile (bottom = low SNR → top = high SNR,
-    tick-labelled by that bin's median TFSP), color = median |error| on a
-    reversed viridis so **dark = low error = good**. Unlike the old fit-R² line
-    plot (which trivially rose with SNR), this shows directly where extra grid
-    density still buys recovery accuracy across the SNR range.
-    """
-    Ns_vals = [r['Ns'] for r in results]
-
-    stages = [('grid', 'grid fit')]
-    if not skip_final_fit:
-        stages.append(('final', 'final fit'))
-
-    nrows, ncols = len(stages), len(ERROR_PARAMS)
-    f, axs = plt.subplots(nrows, ncols, figsize=(4.3 * ncols, 3.7 * nrows),
-                          squeeze=False)
-    ylabels = [f'{bin_medians[b]:.2f}' if np.isfinite(bin_medians[b]) else '—'
-               for b in range(n_bins)]
-
-    for si, (key, slabel) in enumerate(stages):
-        for pi, name in enumerate(ERROR_PARAMS):
-            ax = axs[si][pi]
-            # rows = TFSP bins (origin='lower' puts bin 0 = low SNR at bottom).
-            M = np.array([[r[key]['err_by_bin'][name][b] for r in results]
-                          for b in range(n_bins)])
-            im = ax.imshow(M, aspect='auto', origin='lower', cmap='viridis_r',
-                           interpolation='nearest')
-            ax.set_xticks(range(len(Ns_vals)))
-            ax.set_xticklabels(Ns_vals, fontsize=7)
-            ax.set_yticks(range(n_bins))
-            ax.set_yticklabels(ylabels, fontsize=6)
-            unit = ERROR_UNITS[name]
-            ax.set_title(f'{slabel}: {name}' + (f' ({unit})' if unit else ''),
-                         fontsize=10)
-            if si == nrows - 1:
-                ax.set_xlabel('Grid size (Ns)')
-            if pi == 0:
-                ax.set_ylabel('TFSP bin median\n(low → high SNR)', fontsize=8)
-            cb = f.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-            cb.ax.tick_params(labelsize=6)
-
-    f.suptitle('Median recovery error by TFSP (SNR) decile vs grid size '
-               '(dark = low error)', fontsize=14)
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    plt.close(f)
-    print(f'Error-by-TFSP heatmap saved to {save_path}')
-
-
 def plot_recovery_scatter(results, save_path, fit_dir, trueFit_data, tfsp,
                           skip_final_fit):
-    """Fitted-vs-true identity scatters at representative Ns.
+    """Fitted-vs-true identity scatters, one column per swept Ns.
 
-    Rows = SCATTER_PARAMS (rho, theta, sigma, n), columns = up to 3 representative
-    grid sizes (smallest / middle / largest swept). Points are colored by TFSP
-    (SNR); the pink dashed line is y=x, and each panel is annotated with MAE and
-    median bias. Fits are reloaded from the saved .npy estimates, so this works
-    identically in the live sweep and in --plot-only. Uses the final fit when
-    available, otherwise the grid fit.
+    Rows = SCATTER_PARAMS (rho, theta, sigma, n), columns = every grid size in the
+    sweep. Points are colored by TFSP (SNR); the pink dashed line is y=x, and each
+    panel is annotated with MAE and median bias. Fits are reloaded from the saved
+    .npy estimates, so this works identically in the live sweep and in
+    --plot-only. Uses the final fit when available, otherwise the grid fit.
     """
-    uniq = sorted({r['Ns'] for r in results})
-    if not uniq:
+    reps = sorted({r['Ns'] for r in results})
+    if not reps:
         return
-    reps = uniq if len(uniq) <= 3 else [uniq[0], uniq[len(uniq) // 2], uniq[-1]]
 
     use_final = not skip_final_fit
     stage = 'fFit' if use_final else 'gFit'
@@ -617,12 +508,11 @@ def plot_runtime_vs_ns(results, save_path, skip_final_fit):
     print(f'Runtime-vs-Ns plot saved to {save_path}')
 
 
-def save_metrics(results, save_path, skip_final_fit, bin_medians):
+def save_metrics(results, save_path, skip_final_fit):
     """Persist the sweep metrics as a .npz for downstream inspection.
 
     Per-parameter recovery error is stored as MAE / RMSE / median-bias vectors
-    (indexed by Ns) plus an (n_Ns × n_bins) median-|error|-by-TFSP-decile matrix
-    for each ERROR_PARAMS entry (``tfsp_bin_medians`` labels the bin axis).
+    (indexed by Ns) for each ERROR_PARAMS entry, plus the mean model-fit R².
     """
     def err_vecs(key, name):
         summ = [_err_summary(r[key]['errs'][name]) for r in results]
@@ -638,22 +528,17 @@ def save_metrics(results, save_path, skip_final_fit, bin_medians):
         'final_fit_time': np.array([r['final_fit_time'] for r in results]),
         'grid_mean_r2': np.array([r['grid']['mean_r2'] for r in results]),
         'n_grid_values': np.array(N_GRID_VALUES),
-        'tfsp_bin_medians': np.asarray(bin_medians),
     }
     for name in ERROR_PARAMS:
         mae, rmse, bias = err_vecs('grid', name)
         payload[f'grid_mae_{name}'] = mae
         payload[f'grid_rmse_{name}'] = rmse
         payload[f'grid_bias_{name}'] = bias
-        payload[f'grid_err_by_bin_{name}'] = np.array(
-            [r['grid']['err_by_bin'][name] for r in results])
         if not skip_final_fit:
             fmae, frmse, fbias = err_vecs('final', name)
             payload[f'final_mae_{name}'] = fmae
             payload[f'final_rmse_{name}'] = frmse
             payload[f'final_bias_{name}'] = fbias
-            payload[f'final_err_by_bin_{name}'] = np.array(
-                [r['final']['err_by_bin'][name] for r in results])
     if not skip_final_fit:
         payload['final_mean_r2'] = np.array([r['final']['mean_r2'] for r in results])
 
@@ -738,11 +623,10 @@ def _run(args, codeStartTime, p, params):
     )
 
     # TFSP (SNR) per voxel, computed once from the detrended data (independent of
-    # Ns). Voxels are binned by TFSP decile so R² can be tracked per SNR bin.
-    print('Computing TFSP (SNR) per voxel and assigning TFSP bins...')
+    # Ns). Used to color the recovery-scatter points by SNR.
+    print('Computing TFSP (SNR) per voxel...')
     tfsp, _, _, _ = compute_tfsp(timeseries_data, tr=params['tr_length'],
                                  sweep_period_s=TFSP_SWEEP_PERIOD_S)
-    bin_labels, bin_medians = compute_tfsp_bins(tfsp, N_TFSP_BINS)
 
     # All S03 outputs live under dedicated S03 subfolders of the usual dirs.
     fit_dir = os.path.join(p['pRF_data'], 'Simulation', 'popeyeFit', 'S03')
@@ -756,8 +640,7 @@ def _run(args, codeStartTime, p, params):
     if args.plot_only:
         # Rebuild results from previously saved fits — no fitting.
         results, effective_skip = build_results_from_saved(
-            grid_sizes, fit_dir, stimulus, trueFit_data, args.skip_final_fit,
-            bin_labels, N_TFSP_BINS)
+            grid_sizes, fit_dir, stimulus, trueFit_data, args.skip_final_fit)
         if not results:
             print('[plot-only] No saved fits found for the requested Ns — nothing to plot.')
             return
@@ -778,7 +661,6 @@ def _run(args, codeStartTime, p, params):
                     fit_from_preds(Ns, grid_space, param_width, grid_preds, prep_time,
                                    stimulus, timeseries_data, indices, nvoxs,
                                    args.use_gpu, args.skip_final_fit, fit_dir,
-                                   bin_labels, N_TFSP_BINS,
                                    n_iter=args.n_iter, lr=args.lr, sub_batch=args.sub_batch)
                 )
         else:
@@ -795,7 +677,6 @@ def _run(args, codeStartTime, p, params):
                         fit_from_preds(Ns, grid_space, param_width, grid_preds, prep_time,
                                        stimulus, timeseries_data, indices, nvoxs,
                                        args.use_gpu, args.skip_final_fit, fit_dir,
-                                       bin_labels, N_TFSP_BINS,
                                        n_iter=args.n_iter, lr=args.lr, sub_batch=args.sub_batch)
                     )
 
@@ -803,18 +684,13 @@ def _run(args, codeStartTime, p, params):
                         effective_skip)
     plot_recovery_scatter(results, os.path.join(fig_dir, 'recovery_scatter.png'),
                           fit_dir, trueFit_data, tfsp, effective_skip)
-    plot_r2_vs_ns(results, os.path.join(fig_dir, 'r2_vs_Ns.png'),
-                  effective_skip)
-    plot_error_by_tfsp_heatmap(results,
-                               os.path.join(fig_dir, 'error_by_tfsp_heatmap.png'),
-                               effective_skip, bin_medians, N_TFSP_BINS)
     if args.plot_only:
         print('[plot-only] Runtime figure skipped — per-Ns timing is not persisted.')
     else:
         plot_runtime_vs_ns(results, os.path.join(fig_dir, 'runtime_vs_Ns.png'),
                            effective_skip)
     save_metrics(results, os.path.join(fig_dir, 'sweep_metrics.npz'),
-                 effective_skip, bin_medians)
+                 effective_skip)
 
     codeEndTime = time.perf_counter()
     print_time(codeStartTime, codeEndTime,
