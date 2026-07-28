@@ -40,7 +40,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from popeye.visual_stimulus import VisualStimulus
 
-from H01_config import DEFAULT_PARAMS, set_paths
+from H01_config import DEFAULT_PARAMS, GRID_DEFAULTS, set_paths, get_gridfit_path
 from H02_dataloader import load_stimuli
 from H03_fit_utils import print_time, remove_trend, constraint_grids, set_dark_theme
 from H04_grid_predict import getGridPreds
@@ -52,8 +52,9 @@ from D01_analyze_snr import compute_tfsp
 from S02_run_simulation_fit import TeeLogger, load_simulation_data
 
 
-# Finer CSS exponent grid for the sweep (10 values vs the default 4).
-N_GRID_VALUES = np.round(np.linspace(0.25, 1.0, 10), 4).tolist()
+# Finer CSS exponent grid for the sweep (10 values vs the coarse 4). Shared with
+# S02 via H01_config so both build the same grid and reuse the same cache file.
+N_GRID_VALUES = GRID_DEFAULTS['n_grid_values_fine']
 
 # TFSP task-band period (seconds); matches S02. TFSP (SNR) is used only to color
 # the recovery-scatter points.
@@ -101,17 +102,6 @@ def parse_args():
                              '.npy files already saved under Simulation/popeyeFit/S03/')
     parser.set_defaults(use_gpu=True)
     return parser.parse_args()
-
-
-def get_s03_gridfit_path(p, Ns, n_res):
-    """Grid-prediction cache path for the sweep (encodes Ns and n-grid resolution).
-
-    Lives alongside the other caches in ``Stimuli/gridestims/``. The Ns + n-res
-    encoding keeps it distinct from the default ``gridfit_{Ns}.npy`` caches.
-    """
-    gridestims_dir = os.path.join(p['stimuli_path'], 'gridestims')
-    os.makedirs(gridestims_dir, exist_ok=True)
-    return os.path.join(gridestims_dir, f'gridfit_Ns{Ns}_n{n_res}.npy')
 
 
 def build_grid_space(stimulus, Ns):
@@ -207,7 +197,7 @@ def prepare_gridpreds(Ns, stimulus, p, nTRs):
     print(f'[Ns={Ns}] Grid space: {len(grid_space)} points '
           f'(n-grid resolution = {len(N_GRID_VALUES)})')
 
-    gridfit_path = get_s03_gridfit_path(p, Ns, len(N_GRID_VALUES))
+    gridfit_path = get_gridfit_path(p, Ns, n_res=len(N_GRID_VALUES))
     if os.path.exists(gridfit_path):
         print(f'[Ns={Ns}] Loading grid predictions from disk ({gridfit_path})')
         grid_preds = np.load(gridfit_path)

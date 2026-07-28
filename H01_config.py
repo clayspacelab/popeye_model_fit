@@ -11,6 +11,8 @@ import os
 import socket
 import ctypes
 
+import numpy as np
+
 # ---------------------------------------------------------------------------
 # Default experiment parameters
 # ---------------------------------------------------------------------------
@@ -26,18 +28,28 @@ DEFAULT_PARAMS = {
 # Grid search defaults
 GRID_DEFAULTS = {
     'Ns': 50,                 # grid density
-    'n_grid_values': [0.25, 0.5, 0.75, 1.0],  # CSS exponent grid
+    'n_grid_values': [0.25, 0.5, 0.75, 1.0],  # coarse CSS exponent grid (subject pipeline)
+    # Finer 10-value CSS exponent grid used by the simulation scripts (S02/S03),
+    # since the exponent is the parameter most sensitive to grid resolution.
+    'n_grid_values_fine': np.round(np.linspace(0.25, 1.0, 10), 4).tolist(),
 }
 
-def get_gridfit_path(p, Ns=None):
-    """Return the cached grid prediction path formatted with Ns.
+def get_gridfit_path(p, Ns=None, n_res=None):
+    """Return the cached grid-prediction path.
 
     Caches live in a dedicated ``Stimuli/gridestims/`` folder (created on demand).
+    When ``n_res`` (the CSS-exponent grid resolution) is given, the filename also
+    encodes it — ``gridfit_Ns{Ns}_n{n_res}.npy`` — so caches built with different
+    n-grid densities never collide and are shared across scripts (e.g. S02 reuses
+    the file S03 generated). Without ``n_res`` the legacy ``gridfit_{Ns}.npy`` name
+    is used.
     """
     if Ns is None:
         Ns = GRID_DEFAULTS['Ns']
     gridestims_dir = os.path.join(p['stimuli_path'], 'gridestims')
     os.makedirs(gridestims_dir, exist_ok=True)
+    if n_res is not None:
+        return os.path.join(gridestims_dir, f'gridfit_Ns{Ns}_n{n_res}.npy')
     return os.path.join(gridestims_dir, f'gridfit_{Ns}.npy')
 
 # CSS model output field names (9-element tuple per voxel/vertex)

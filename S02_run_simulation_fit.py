@@ -279,17 +279,20 @@ def _run(args, codeStartTime, p, params):
         np.linspace(0.1, 5, 3 * Ns // 4),
         np.geomspace(5, stimulus.deg_x0.max(), Ns // 4),
     ))
-    n_grid = np.asarray(GRID_DEFAULTS['n_grid_values'])
+    # Use the finer 10-value CSS-exponent grid (shared with S03) — the exponent
+    # is the parameter most sensitive to grid resolution.
+    n_grid = np.asarray(GRID_DEFAULTS['n_grid_values_fine'])
     grid_space_orig = list(product(x_grid, y_grid, s_grid, n_grid))
     grid_space = constraint_grids(grid_space_orig, stimulus)
-    print(f'Grid space: {len(grid_space)} points')
+    print(f'Grid space: {len(grid_space)} points '
+          f'(n-grid resolution = {len(n_grid)})')
 
     param_width = [np.mean(np.diff(x_grid)), np.mean(np.diff(y_grid)),
                    np.mean(np.diff(s_grid)), np.mean(np.diff(n_grid))]
 
     # Grid predictions
     tstamp_start = time.perf_counter()
-    gridfit_path = get_gridfit_path(p, Ns)
+    gridfit_path = get_gridfit_path(p, Ns, n_res=len(n_grid))
     if os.path.exists(gridfit_path):
         print(f"Loading grid predictions from disk ({gridfit_path})")
         grid_preds = np.load(gridfit_path)
