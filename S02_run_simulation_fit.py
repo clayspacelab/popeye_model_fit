@@ -177,6 +177,49 @@ def plot_comparison(trueFit_data, fitted_data, title_prefix, save_path, tfsp=Non
     print(f"Comparison plot saved to {save_path}")
 
 
+def plot_tfsp_binned_voxels(timeseries, tfsp, save_path, n_bins=5, n_cols=4):
+    """Plot example detrended voxel timeseries grouped by TFSP (SNR) bin.
+
+    Voxels are split into ``n_bins`` TFSP quantile bins; each bin is one row (top
+    = low SNR → bottom = high SNR). The ``n_cols`` columns are example voxels
+    spanning that bin's TFSP range (low→high within the bin). Replaces the old
+    original-vs-detrended comparison.
+    """
+    tfsp = np.asarray(tfsp).flatten()
+    edges = np.quantile(tfsp, np.linspace(0, 1, n_bins + 1))
+    bin_labels = np.clip(np.digitize(tfsp, edges[1:-1]), 0, n_bins - 1)
+
+    f, axs = plt.subplots(n_bins, n_cols, figsize=(4 * n_cols, 2.4 * n_bins),
+                          squeeze=False)
+    for b in range(n_bins):
+        idx = np.where(bin_labels == b)[0]
+        order = idx[np.argsort(tfsp[idx])] if idx.size else idx
+        if order.size >= n_cols:
+            sel = order[np.linspace(0, order.size - 1, n_cols).round().astype(int)]
+        else:
+            sel = order
+        med = float(np.median(tfsp[idx])) if idx.size else np.nan
+        for c in range(n_cols):
+            ax = axs[b][c]
+            if c < sel.size:
+                v = int(sel[c])
+                ax.plot(timeseries[v], color='#00e5ff', linewidth=1.0)
+                ax.set_title(f'vox {v}  TFSP={tfsp[v]:.2f}', fontsize=8)
+                ax.grid(True, alpha=0.3)
+                if c == 0:
+                    lbl = (f'bin {b}\nTFSP~{med:.2f}' if np.isfinite(med)
+                           else f'bin {b}')
+                    ax.set_ylabel(lbl, fontsize=9)
+            else:
+                ax.set_visible(False)
+    f.suptitle('Detrended voxels by TFSP (SNR) bin '
+               f'(top = low SNR → bottom = high SNR, {n_bins} bins)', fontsize=13)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close(f)
+    print(f'TFSP-binned voxels plot saved to {save_path}')
+
+
 def main():
     args = parse_args()
     codeStartTime = time.perf_counter()
@@ -222,24 +265,19 @@ def _run(args, codeStartTime, p, params):
     print()
 
     # Detrend
-    scan_data_orig = scan_data.copy()
     scan_data = remove_trend(scan_data, method='all')
 
-    # Plot detrending example
+    # TFSP (SNR) per voxel from the detrended data — used to bin the example
+    # voxels below and, later, to color the fit-comparison plots.
+    tfsp, _, _, _ = compute_tfsp(scan_data, tr=params['tr_length'], sweep_period_s=25.0)
+
+    # Plot example detrended voxels grouped by TFSP (SNR) bin: 5 rows (bins,
+    # low→high SNR) × 4 columns (example voxels spanning each bin).
     fig_dir = os.path.join(p['pRF_data'], 'Simulation', 'figures')
     os.makedirs(fig_dir, exist_ok=True)
-
-    f, axs = plt.subplots(2, 5, figsize=(20, 10))
-    for i in range(min(5, nvoxs)):
-        axs[0, i].plot(scan_data_orig[i], color='#ff9800', linewidth=1.2)
-        axs[0, i].set_title('Original')
-        axs[0, i].grid(True, alpha=0.3)
-        axs[1, i].plot(scan_data[i], color='#00e5ff', linewidth=1.2)
-        axs[1, i].set_title('Detrended')
-        axs[1, i].grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(os.path.join(fig_dir, 'detrended_voxels.png'), dpi=300, bbox_inches='tight')
-    plt.close(f)
+    plot_tfsp_binned_voxels(scan_data, tfsp,
+                            os.path.join(fig_dir, 'detrended_voxels.png'),
+                            n_bins=5, n_cols=4)
 
     # Set up for volumetric-style fitting (1x1xN pseudo-volume)
     timeseries_data = scan_data
@@ -318,8 +356,6 @@ def _run(args, codeStartTime, p, params):
     gfit_save_path = os.path.join(sim_fit_dir, f'RF_ss5_gFit_popeye_Ns{Ns}.npy')
     np.save(gfit_save_path, RF_ss5_gFit[0, 0, :, :])
     print(f"Grid-fit estimates saved to {gfit_save_path}")
-
-    tfsp, _, _, _ = compute_tfsp(timeseries_data, tr=params['tr_length'], sweep_period_s=25.0)
 
     plot_comparison(trueFit_data, RF_ss5_gFit[0, 0, :, :],
                     f'Grid-fit (Ns={Ns})',
