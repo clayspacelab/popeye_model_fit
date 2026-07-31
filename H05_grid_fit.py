@@ -17,11 +17,10 @@ Key functions:
 """
 
 import numpy as np
-import ctypes
 from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
+from scipy.linalg import lstsq
 
-import popeye.utilities_cclab as utils
 
 # Module-level globals populated by the Pool worker initializer
 _G_centered = None
@@ -40,7 +39,6 @@ def _worker_init(G_centered, S_xx, grid_space):
 # ---------------------------------------------------------------------------
 # Core computation functions (CPU)
 # ---------------------------------------------------------------------------
-
 def overload_estimate(estimate, data, prediction, use_gpu=False):
     """
     Compute the full pRF estimate via OLS regression.
@@ -68,17 +66,22 @@ def overload_estimate(estimate, data, prediction, use_gpu=False):
         return _overload_estimate_gpu(estimate, data, prediction)
 
     X = np.vstack((np.ones(len(prediction)), prediction)).T
-    XtX = np.dot(X.T, X)
-    XtY = np.dot(X.T, data)
-    betas = np.linalg.solve(XtX, XtY)
-    scaled_prediction = np.dot(X, betas)
-    r2 = np.corrcoef(data, scaled_prediction)[0, 1]**2
+    # XtX = np.dot(X.T, X)
+    # XtY = np.dot(X.T, data)
+    # betas = np.linalg.solve(XtX, XtY)
+    #this is safer (handles rank-deficient matrices) and potentially faster
+    betas, *_ = lstsq(X, data, lapack_driver='gelsy')  # returns (beta, residuals, rank, s)
+    #same as computing correlation but I'm hoping a little faster and can be scaled up to additional regressors
+    residuals = data - np.dot(X, betas)
+    data_dm = data - np.mean(data)
+    r2 = 1 - (np.dot(residuals, residuals) / np.dot(data_dm, data_dm))
+    # scaled_prediction = np.dot(X, betas)
+    # r2 = np.corrcoef(data, scaled_prediction)[0, 1]**2
     theta = np.mod(np.arctan2(estimate[1], estimate[0]), 2 * np.pi)
     rho = np.sqrt(estimate[0]**2 + estimate[1]**2)
 
     return (theta, r2, rho, estimate[2], estimate[3],
             estimate[0], estimate[1], betas[1], betas[0])
-
 
 def process_voxel(y):
     """
@@ -110,7 +113,7 @@ def process_voxel(y):
 
     # Center the voxel timeseries
     y_c = y - y.mean()                     # (T,)
-    S_yy = float(y_c @ y_c)               # scalar
+    S_yy = np.dot(y_c,y_c)               # scalar
 
     # Vectorized OLS across all G grid points in one matmul
     S_xy = G_centered @ y_c               # (G,)  — the hot path
