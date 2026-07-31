@@ -9,7 +9,6 @@ Supports both volumetric (NIfTI, default) and surface (GIFTI) data formats.
 
 import os
 import socket
-import ctypes
 
 # ---------------------------------------------------------------------------
 # Default experiment parameters
@@ -19,7 +18,6 @@ DEFAULT_PARAMS = {
     'screenWidth': 36.2,      # cm
     'scaleFactor': 1,
     'resampleFactor': 1,
-    'dtype': ctypes.c_int16,
     'tr_length': 1.3,         # seconds
 }
 
@@ -106,6 +104,9 @@ def set_paths(subjID, data_format='volumetric'):
         p['orig_data'] = '/d/DATD/datd/pRF_orig/'
     elif host == 'vader':
         p['pRF_data'] = '/clayspace/datd/popeye_pRF/'
+        username = os.getenv("USER")
+        if username == 'nathan':
+            p['pRF_data'] = os.path.join(p['pRF_data'], 'nathan')
     elif host == 'local_mac':
         p['pRF_data'] = '/Users/mrugankdake/Documents/Clayspace/MRI/popeye_pRF/'
         p['orig_data'] = '/Users/mrugankdake/Documents/Clayspace/MRI/pRF_orig/'
