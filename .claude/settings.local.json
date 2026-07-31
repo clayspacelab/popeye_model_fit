@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(grep -iB1 \"claude\\\\|co-author\\\\|anthropic\\\\|noreply\")",
-      "Bash(git log *)",
-      "Bash(git ls-remote *)"
-    ]
-  }
-}
