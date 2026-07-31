@@ -11,10 +11,10 @@ Contains:
 """
 
 import numpy as np
-from scipy.signal import detrend
 import matplotlib.pyplot as plt
-
-import popeye.utilities_cclab as utils
+import sweepea.utilities as utils
+from scipy.signal import detrend
+from scipy.linalg import lstsq
 
 
 def set_dark_theme():
@@ -111,8 +111,8 @@ def constraint_grids(grid_space_orig, stimulus):
     x, y, s = grid_space_orig[:, 0], grid_space_orig[:, 1], grid_space_orig[:, 2]
     distances = np.sqrt(x**2 + y**2)
 
-    max_dist1 = 2 * stimulus.deg_x0.max()
-    max_dist2 = stimulus.deg_x0.max() + 2 * s
+    max_dist1 = 2 * stimulus.deg_x.max()
+    max_dist2 = stimulus.deg_x.max() + 2 * s
 
     mask = (distances < max_dist1) & (distances < max_dist2)
     grid_space = grid_space_orig[mask]
@@ -148,7 +148,7 @@ def generate_bounds(init_estim, param_width):
     return (x_bounds, y_bounds, sigma_bounds, n_bounds)
 
 
-def error_func(parameters, data, stimulus, objective_function):
+def error_func(parameters, data, objective_function):
     """
     Error function for scipy.optimize.minimize.
 
@@ -158,8 +158,6 @@ def error_func(parameters, data, stimulus, objective_function):
         Current (x, y, sigma, n) values.
     data : ndarray
         Observed timeseries.
-    stimulus : VisualStimulus
-        Popeye stimulus object.
     objective_function : callable
         Function that generates predicted timeseries from parameters.
 
@@ -168,6 +166,15 @@ def error_func(parameters, data, stimulus, objective_function):
     float
         Sum of squared errors.
     """
-    prediction = objective_function([*parameters, stimulus])
-    error = np.sum((data - prediction)**2)
+
+    #added then commented out code for computing betas here pending fully undersanding the 
+    #unscaled data approach.
+
+    prediction = objective_function(parameters)
+    # X = np.vstack((np.ones(len(prediction)), prediction)).T
+    # betas, *_ = lstsq(X, data, lapack_driver='gelsy')     
+    # residuals = data - np.dot(X, betas)
+    residuals = data - prediction
+    error = residuals.dot(residuals)
+    
     return error

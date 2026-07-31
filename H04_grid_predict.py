@@ -10,11 +10,22 @@ Key functions:
 """
 
 import numpy as np
+import sweepea.utilities as utils
 from multiprocessing import Pool, cpu_count
-from scipy.signal import fftconvolve
 
-from popeye.spinach import generate_og_receptive_field, generate_rf_timeseries_nomask
-import popeye.utilities_cclab as utils
+
+# ---------------------------------------------------------------------------
+# CPU path — Pool worker globals (set once via initializer, never pickled)
+# ---------------------------------------------------------------------------
+
+_stimulus = None
+_hrf      = None
+
+def _worker_init_gridpredict(stimulus, hrf):
+    """Set stimulus + bounds once per worker subprocess at Pool startup. Also set HRF."""
+    global _stimulus, _hrf
+    _stimulus = stimulus
+    _hrf = hrf
 
 
 def generate_grid_prediction(args):
@@ -39,23 +50,26 @@ def generate_grid_prediction(args):
         Predicted BOLD timeseries (n_timepoints,), or None if error.
     """
     try:
-        x, y, sigma, n, stimulus = args
+        x, y, sigma, n, stimulus, hrf = args
 
         # Generate 2D Gaussian receptive field
-        rf = generate_og_receptive_field(x, y, sigma, stimulus.deg_x, stimulus.deg_y)
-        rf /= ((2 * np.pi * sigma**2) * 1 / np.diff(stimulus.deg_x[0, 0:2])**2)
+        rf = utils.generate_og_receptive_field(x, y, sigma, stimulus.deg_x, stimulus.deg_y)
 
-        # RF × stimulus → neural response timeseries
-        response = generate_rf_timeseries_nomask(stimulus.stim_arr, rf)
+        #We do normalization steps in visual stim and generate_og_receptive_field, so we don't need to do it here
+        #rf /= ((2 * np.pi * sigma**2) * 1 / np.diff(stimulus.deg_x[0, 0:2])**2)
+
+        # RF × stimulus → neural response timeseries YOU ARE HERE!!!
+        response = utils.generate_rf_timeseries(stimulus.stim_arr, rf)
 
         # CSS compressive nonlinearity
         response **= n
 
         # Convolve with HRF
-        predsig = fftconvolve(response, utils.double_gamma_hrf(0, 1.3))[0:len(response)]
+        predsig = np.convolve(response, hrf)[0:len(response)]
 
-        # Normalize to percent signal change
-        predsig = (predsig - np.mean(predsig)) / np.mean(predsig)
+        # Normalize to percent signal change [not needed b/c we do regression in fitting]
+        # mean_predsig = np.mean(predsig)
+        # predsig = (predsig - mean_predsig) / mean_predsig
 
         return predsig
 
@@ -63,8 +77,11 @@ def generate_grid_prediction(args):
         print(f"Error in generate_grid_prediction: {e}")
         return None
 
+def generate_grid_pred_pool(args):
 
-def getGridPreds(grid_space, stimulus, gridPath, nTRs):
+    return generate_grid_prediction((*args,_stimulus, _hrf))
+
+def getGridPreds(grid_space, stimulus, gridPath, nTRs, hrf):
     """
     Generate predicted timeseries for all grid points in parallel, and cache to disk.
 
@@ -87,10 +104,17 @@ def getGridPreds(grid_space, stimulus, gridPath, nTRs):
     grid_preds = np.empty((len(grid_space), nTRs))
     print(f"Starting prediction generation for {len(grid_space)} grid points...")
 
-    with Pool(cpu_count()) as pool:
+    n_workers = cpu_count()
+    chunksize = max(1, grid_preds.shape[0] // (n_workers * 4))
+
+    with Pool(
+            cpu_count(),
+            initializer=_worker_init_gridpredict,
+            initargs=(stimulus, hrf)
+        ) as pool:
         results = pool.map(
-            generate_grid_prediction,
-            [(x, y, s, n, stimulus) for x, y, s, n in grid_space]
+            generate_grid_pred_pool,
+            [(x, y, s, n) for x, y, s, n in grid_space],chunksize=chunksize
         )
 
     for i, prediction in enumerate(results):
