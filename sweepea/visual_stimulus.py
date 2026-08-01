@@ -134,7 +134,7 @@ def resample_stimulus(stim_arr, scale_factor=0.05, mode='nearest',
 
 #define a named tuple for packaging up the stimulus parameters we're actually using for fitting in 
 #VisualStimulus.
-_StimParams = namedtuple('StimParams', ['stim_arr', 'deg_x', 'deg_y', 'run_length'])
+_StimParams = namedtuple('_StimParams', ['stim_arr', 'deg_x', 'deg_y', 'run_length'])
 
 class VisualStimulus:
     
