@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import ctypes
 import time
 import os
 import sys
@@ -29,8 +30,8 @@ import nibabel as nib
 
 from itertools import product
 
-import sweepea.utilities as utils
-from sweepea.visual_stimulus import VisualStimulus
+import popeye.utilities_cclab as utils
+from popeye.visual_stimulus import VisualStimulus
 
 from H01_config import DEFAULT_PARAMS, GRID_DEFAULTS, set_paths, get_gridfit_path
 from H02_dataloader import load_stimuli, save2nifti
@@ -158,22 +159,17 @@ def plot_comparison(trueFit_data, fitted_data, title_prefix, save_path, tfsp=Non
             ax.grid(True, alpha=0.3)
         else:
             true_vals = trueFit_data[:, i].flatten()
-            ax.scatter(true_vals, fit_vals, s=8, alpha=0.1,
+            ax.scatter(true_vals, fit_vals, s=8, alpha=0.5,
                        color='#00e5ff', edgecolors='none')
             lims = [min(true_vals.min(), fit_vals.min()),
                     max(true_vals.max(), fit_vals.max())]
-            r, p = stats.spearmanr(true_vals, fit_vals)
-            rmse = np.sqrt(np.mean((true_vals - fit_vals) ** 2))
-            ax.plot(lims, lims, '--', color='#ff4081', linewidth=1.2, label=f'r = {r:.3f}\nRMSE = {rmse:.3f}')
+            ax.plot(lims, lims, '--', color='#ff4081', linewidth=1.2, label='identity')
             ax.set_xlim(lims)
             ax.set_ylim(lims)
             ax.set_title(f"{title_prefix}: {param_names[i]}")
             ax.set_xlabel('Ground Truth')
             ax.set_ylabel('Fitted')
             ax.grid(True, alpha=0.3)
-
-
-            ax.legend(fontsize=9, framealpha=0.3)
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
@@ -294,32 +290,32 @@ def _run(args, codeStartTime, p, params):
     bar = np.flip(bar, axis=0)
 
     # Load NIfTI for affine/header (needed for saving)
-    #func_img = nib.load(p['pRF_ss5'])
+    func_img = nib.load(p['pRF_ss5'])
 
     stimulus = VisualStimulus(
         bar.astype('int16'),
         params['viewingDistance'],
         params['screenWidth'],
         params['scaleFactor'],
-        params['tr_length'],
-        #params['dtype'],
+        float(func_img.header['pixdim'][4]),
+        params['dtype'],
     )
 
     # Build grid
     Ns = args.grid_size
     x_grid = np.concatenate((
-        np.linspace(-stimulus.deg_x.max(), stimulus.deg_x.max(), Ns // 2),
-        np.geomspace(-stimulus.deg_x.max(), -2 * stimulus.deg_x.max(), Ns // 4),
-        np.geomspace(stimulus.deg_x.max(), 2 * stimulus.deg_x.max(), Ns // 4),
+        np.linspace(-stimulus.deg_x0.max(), stimulus.deg_x0.max(), Ns // 2),
+        np.geomspace(-stimulus.deg_x0.max(), -2 * stimulus.deg_x0.max(), Ns // 4),
+        np.geomspace(stimulus.deg_x0.max(), 2 * stimulus.deg_x0.max(), Ns // 4),
     ))
     y_grid = np.concatenate((
-        np.linspace(-stimulus.deg_y.max(), stimulus.deg_y.max(), Ns // 2),
-        np.geomspace(-stimulus.deg_y.max(), -2 * stimulus.deg_y.max(), Ns // 4),
-        np.geomspace(stimulus.deg_y.max(), 2 * stimulus.deg_y.max(), Ns // 4),
+        np.linspace(-stimulus.deg_y0.max(), stimulus.deg_y0.max(), Ns // 2),
+        np.geomspace(-stimulus.deg_y0.max(), -2 * stimulus.deg_y0.max(), Ns // 4),
+        np.geomspace(stimulus.deg_y0.max(), 2 * stimulus.deg_y0.max(), Ns // 4),
     ))
     s_grid = np.concatenate((
         np.linspace(0.1, 5, 3 * Ns // 4),
-        np.geomspace(5, stimulus.deg_x.max(), Ns // 4),
+        np.geomspace(5, stimulus.deg_x0.max(), Ns // 4),
     ))
     # Use the finer 10-value CSS-exponent grid (shared with S03) — the exponent
     # is the parameter most sensitive to grid resolution.
@@ -335,14 +331,13 @@ def _run(args, codeStartTime, p, params):
     # Grid predictions
     tstamp_start = time.perf_counter()
     gridfit_path = get_gridfit_path(p, Ns, n_res=len(n_grid))
-    hrf = utils.double_gamma_hrf(0, params['tr_length']) 
     if os.path.exists(gridfit_path):
         print(f"Loading grid predictions from disk ({gridfit_path})")
         grid_preds = np.load(gridfit_path)
     else:
         print(f"Generating grid predictions ({gridfit_path})...")
-        grid_preds = getGridPreds(grid_space, stimulus.params, gridfit_path,
-                                  timeseries_data.shape[1],hrf)
+        grid_preds = getGridPreds(grid_space, stimulus, gridfit_path,
+                                  timeseries_data.shape[1])
     tstamp_gridpred = time.perf_counter()
     print_time(tstamp_start, tstamp_gridpred, 'Grid predictions')
 
@@ -372,7 +367,7 @@ def _run(args, codeStartTime, p, params):
         print('Starting final fit...')
         RF_ss5_fFit = np.empty((1, 1, nvoxs, 9))
         RF_ss5_fFit = get_final_estims(RF_ss5_gFit, param_width, timeseries_data,
-                                        stimulus.params, hrf, RF_ss5_fFit, indices,
+                                        stimulus, RF_ss5_fFit, indices,
                                         use_gpu=args.use_gpu)
         RF_ss5_fFit = RF_ss5_fFit.reshape(1, 1, nvoxs, 9)  # restore 4D shape
         tstamp_finalfit = time.perf_counter()

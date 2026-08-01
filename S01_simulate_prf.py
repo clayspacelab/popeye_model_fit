@@ -16,6 +16,7 @@ Usage:
 """
 
 import argparse
+import ctypes
 import random
 import pickle
 import os
@@ -27,11 +28,10 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 from scipy.io import savemat
-from scipy.stats import zscore
 from itertools import product
 
-import sweepea.utilities as utils
-from sweepea.visual_stimulus import VisualStimulus
+import popeye.utilities_cclab as utils
+from popeye.visual_stimulus import VisualStimulus
 
 from H01_config import DEFAULT_PARAMS, GRID_DEFAULTS, set_paths
 from H02_dataloader import load_stimuli
@@ -51,7 +51,7 @@ def parse_args():
 
 
 
-def _generate_predictions_gpu(params_vox, stimulus, hrf, sub_batch=5000):
+def _generate_predictions_gpu(params_vox, stimulus, sub_batch=5000):
     """
     Generate CSS pRF predictions for all voxels using GPU batch computation.
 
@@ -65,8 +65,6 @@ def _generate_predictions_gpu(params_vox, stimulus, hrf, sub_batch=5000):
     ----------
     params_vox : list of (x, y, sigma, n) tuples
     stimulus   : VisualStimulus
-    hrf        : ndarray
-        HRF to convolve with the neural response.
     sub_batch  : int   voxels per GPU sub-batch (default 5000)
 
     Returns
@@ -79,21 +77,19 @@ def _generate_predictions_gpu(params_vox, stimulus, hrf, sub_batch=5000):
         raise RuntimeError("CuPy is required for GPU prediction generation. "
                            "Install with: pip install cupy-cuda12x")
 
-    import sweepea.utilities as utils_mod
+    import popeye.utilities_cclab as utils_mod
 
-    nT     = stimulus.run_length #stimulus.stim_arr.shape[2]
+    nT     = stimulus.stim_arr.shape[2]
     N      = len(params_vox)
 
     # Transfer stimulus to GPU once
     deg_x_flat = cp.asarray(stimulus.deg_x.ravel(), dtype=cp.float32)   # (H*W,)
     deg_y_flat = cp.asarray(stimulus.deg_y.ravel(), dtype=cp.float32)
-    # stim_flat  = cp.asarray(stimulus.stim_arr.reshape(-1, nT),
-    #                         dtype=cp.float32)                             # (H*W, T)
-    stim_flat  = cp.asarray(stimulus.stim_arr.T,
+    stim_flat  = cp.asarray(stimulus.stim_arr.reshape(-1, nT),
                             dtype=cp.float32)                             # (H*W, T)
-    hrf_cpu    = hrf.astype(np.float32) #should already be float32, but just in case
+    hrf_cpu    = utils_mod.double_gamma_hrf(0, 1.3).astype(np.float32)
     hrf_gpu    = cp.asarray(hrf_cpu)
-    #dx         = float(cp.diff(cp.asarray(stimulus.deg_x[0, 0:2]))[0])
+    dx         = float(cp.diff(cp.asarray(stimulus.deg_x[0, 0:2]))[0])
 
     nfft    = nT + len(hrf_cpu) - 1
     hrf_fft = cp.fft.rfft(hrf_gpu, n=nfft)                              # (nfft//2+1,)
@@ -115,21 +111,21 @@ def _generate_predictions_gpu(params_vox, stimulus, hrf, sub_batch=5000):
         dx_diff = deg_x_flat[None, :] - x[:, None]
         dy_diff = deg_y_flat[None, :] - y[:, None]
         rf      = cp.exp(-(dx_diff**2 + dy_diff**2) / (2.0 * sigma[:, None]**2))
-        #rf     /= (2.0 * np.pi * sigma[:, None]**2) / (dx**2)
+        rf     /= (2.0 * np.pi * sigma[:, None]**2) / (dx**2)
 
         # Neural response: (B, H*W) @ (H*W, T) → (B, T)
         response = rf @ stim_flat
 
         # CSS compressive nonlinearity
-        response = response ** n[:, None]
+        response = cp.abs(response) ** n[:, None]
 
         # Batch HRF convolution via FFT
         R_fft = cp.fft.rfft(response, n=nfft)
         pred  = cp.fft.irfft(R_fft * hrf_fft[None, :])[:, :nT]
 
         # Normalize to percent signal change
-        # mu   = pred.mean(axis=1, keepdims=True)
-        # pred = (pred - mu) / (cp.abs(mu) + 1e-8)
+        mu   = pred.mean(axis=1, keepdims=True)
+        pred = (pred - mu) / (cp.abs(mu) + 1e-8)
 
         results[start:end] = cp.asnumpy(pred)
 
@@ -149,35 +145,35 @@ def main():
     p, _ = set_paths(params['subjID'], data_format='volumetric')
 
     # Load stimulus
-    bar, _ = load_stimuli(p)
+    bar, stim_params = load_stimuli(p)
     bar = bar[:, :, 0:201]
     bar = np.flip(bar, axis=0)
 
     # Create stimulus object
     stimulus = VisualStimulus(
-        stim_arr=bar.astype(np.int16),
+        stim_arr=bar,
         viewing_distance=params['viewingDistance'],
         screen_width=params['screenWidth'],
         scale_factor=params['scaleFactor'],
-        tr_length=params['tr_length'],
-        #dtype=ctypes.c_int16,
+        tr_length=1.3,
+        dtype=ctypes.c_int16,
     )
 
     # Build parameter space
     Ns = args.grid_density
     x_space = np.concatenate((
-        np.linspace(-stimulus.deg_x.max(), stimulus.deg_x.max(), Ns // 2),
-        np.geomspace(-stimulus.deg_x.max(), -2 * stimulus.deg_x.max(), Ns // 4),
-        np.geomspace(stimulus.deg_x.max(), 2 * stimulus.deg_x.max(), Ns // 4),
+        np.linspace(-stimulus.deg_x0.max(), stimulus.deg_x0.max(), Ns // 2),
+        np.geomspace(-stimulus.deg_x0.max(), -2 * stimulus.deg_x0.max(), Ns // 4),
+        np.geomspace(stimulus.deg_x0.max(), 2 * stimulus.deg_x0.max(), Ns // 4),
     ))
     y_space = np.concatenate((
-        np.linspace(-stimulus.deg_y.max(), stimulus.deg_y.max(), Ns // 2),
-        np.geomspace(-stimulus.deg_y.max(), -2 * stimulus.deg_y.max(), Ns // 4),
-        np.geomspace(stimulus.deg_y.max(), 2 * stimulus.deg_y.max(), Ns // 4),
+        np.linspace(-stimulus.deg_y0.max(), stimulus.deg_y0.max(), Ns // 2),
+        np.geomspace(-stimulus.deg_y0.max(), -2 * stimulus.deg_y0.max(), Ns // 4),
+        np.geomspace(stimulus.deg_y0.max(), 2 * stimulus.deg_y0.max(), Ns // 4),
     ))
     s_space = np.concatenate((
         np.linspace(0.1, 5, 3 * Ns // 4),
-        np.geomspace(5, stimulus.deg_x.max(), Ns // 4),
+        np.geomspace(5, stimulus.deg_x0.max(), Ns // 4),
     ))
     n_space = np.linspace(0.01, 1, Ns)
 
@@ -193,32 +189,24 @@ def main():
     print(f"Generating predictions for {len(params_vox)} simulated voxels "
           f"({'GPU' if args.use_gpu else 'CPU'})...")
 
-    # generate hrf
-    hrf = utils.double_gamma_hrf(0, params['tr_length'])
-
     if args.use_gpu:
-        results = _generate_predictions_gpu(params_vox, stimulus.params, hrf)
+        results = _generate_predictions_gpu(params_vox, stimulus)
     else:
         from multiprocessing import Pool, cpu_count
         with Pool(cpu_count()) as pool:
             results = pool.map(
                 generate_grid_prediction,
-                [(x, y, s, n, stimulus.params, hrf) for x, y, s, n in params_vox]
+                [(x, y, s, n, stimulus) for x, y, s, n in params_vox]
             )
         results = np.array(results)
 
     # Add noise + linear trend + baseline
-    noise_levels = np.random.uniform(0.1, 2.5, results.shape)
-    results = (zscore(results, axis=-1, ddof=1)
-               + np.random.normal(0, noise_levels, results.shape)
+    results = (results
+               + np.random.normal(0, 0.2, results.shape)
                + np.linspace(0, 1, results.shape[-1])[None, :]
                + baseline_vox[:, None])
 
     # Save output
-    # username = os.getenv("USER")
-    # if username == 'nathan':
-    #     sim_dir = os.path.join(p['pRF_data'], 'nathan', 'Simulation')
-    # else:
     sim_dir = os.path.join(p['pRF_data'], 'Simulation')
     os.makedirs(sim_dir, exist_ok=True)
     fig_dir = os.path.join(sim_dir, 'figures')
@@ -263,7 +251,7 @@ def main():
 
     # Panel 1: RF Centers (x, y) colored by RF size sigma
     sc1 = axs[0, 0].scatter(x_vals, y_vals, c=s_vals, cmap='plasma', s=15, alpha=0.8)
-    max_deg = float(stimulus.deg_x.max())
+    max_deg = float(stimulus.deg_x0.max())
     circle1 = plt.Circle((0, 0), max_deg, color='#00e5ff', fill=False, linestyle='--', linewidth=1.5, label='FOV Max Deg')
     axs[0, 0].add_patch(circle1)
     axs[0, 0].set_aspect('equal', 'box')

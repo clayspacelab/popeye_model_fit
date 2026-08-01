@@ -22,10 +22,12 @@ Key functions:
 """
 
 import numpy as np
+import ctypes
 from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
 from scipy.optimize import minimize
 
+import popeye.utilities_cclab as utils
 
 from H03_fit_utils import error_func
 from H04_grid_predict import generate_grid_prediction
@@ -38,15 +40,13 @@ from H05_grid_fit import overload_estimate
 
 _stimulus = None
 _bounds   = None
-_hrf      = None
 
 
-def _worker_init_finalfit(stimulus, hrf):
-    """Set stimulus + bounds once per worker subprocess at Pool startup. Also set HRF."""
-    global _stimulus, _bounds, _hrf
+def _worker_init_finalfit(stimulus):
+    """Set stimulus + bounds once per worker subprocess at Pool startup."""
+    global _stimulus, _bounds
     _stimulus = stimulus
-    _hrf = hrf
-    max_deg   = float(stimulus.deg_x.max())
+    max_deg   = float(stimulus.deg_x0.max())
     _bounds   = (
         (-max_deg * 2, max_deg * 2),   # x
         (-max_deg * 2, max_deg * 2),   # y
@@ -82,7 +82,6 @@ def FinalFit_Vox(args):
     init_estim, unscaled_data = args
     stimulus = _stimulus
     bounds   = _bounds
-    hrf      = _hrf
 
     if np.isnan(unscaled_data).any():
         return (np.nan,) * 9
@@ -91,28 +90,23 @@ def FinalFit_Vox(args):
     best_fit = tuple(init_estim)
     x0       = [init_estim[5], init_estim[6], init_estim[3], init_estim[4]]
 
-    def pred_func(args):
-        args = (*args, stimulus, hrf)
-        return generate_grid_prediction(args)
-    
     try:
         result = minimize(
             error_func,
             x0,
             bounds=bounds,
             method='L-BFGS-B',
-            args=(unscaled_data, pred_func),
+            args=(unscaled_data, stimulus, generate_grid_prediction),
             options={'maxiter': 200, 'ftol': 1e-9, 'gtol': 1e-6},
         )
         overload_fin = overload_estimate(
             result.x, unscaled_data,
-            pred_func(result.x)
+            generate_grid_prediction([*result.x, stimulus])
         )
         if overload_fin[1] > best_r2:
             best_fit = overload_fin
-    except Exception as e:
-        print(e)
-        #pass   # keep grid estimate if optimizer fails
+    except Exception:
+        pass   # keep grid estimate if optimizer fails
 
     return best_fit
 
@@ -121,7 +115,7 @@ def FinalFit_Vox(args):
 # Main dispatcher
 # ---------------------------------------------------------------------------
 
-def get_final_estims(gFit, param_width, timeseries_data, stimulus, hrf, fFit, indices,
+def get_final_estims(gFit, param_width, timeseries_data, stimulus, fFit, indices,
                      use_gpu=False, n_iter=300, lr=0.005, sub_batch=None):
     """
     Run gradient-descent refinement for all voxels/vertices.
@@ -146,8 +140,6 @@ def get_final_estims(gFit, param_width, timeseries_data, stimulus, hrf, fFit, in
         Observed data (n_voxels, n_timepoints).
     stimulus : VisualStimulus
         Popeye stimulus object.
-    hrf : ndarray
-        Hemodynamic response function.
     fFit : ndarray
         Output array (shape is overridden; returned as (n_voxels, 9)).
     indices : list
@@ -174,7 +166,7 @@ def get_final_estims(gFit, param_width, timeseries_data, stimulus, hrf, fFit, in
             import cupy as cp
             print("GPU Final Fit: CuPy detected, using batch Adam optimizer.")
             return _get_final_estims_gpu(
-                gFit, timeseries_data, stimulus, hrf, indices, nvoxs,
+                gFit, timeseries_data, stimulus, indices, nvoxs,
                 n_iter=n_iter, lr=lr, sub_batch=sub_batch
             )
         except ImportError:
@@ -203,7 +195,7 @@ def get_final_estims(gFit, param_width, timeseries_data, stimulus, hrf, fFit, in
     with Pool(
         n_workers,
         initializer=_worker_init_finalfit,
-        initargs=(stimulus, hrf)
+        initargs=(stimulus,)
     ) as pool:
         results = list(tqdm(
             pool.imap(FinalFit_Vox, args_list, chunksize=chunksize),
@@ -221,7 +213,7 @@ def get_final_estims(gFit, param_width, timeseries_data, stimulus, hrf, fFit, in
 # GPU path — batch Adam optimizer (requires CuPy)
 # ---------------------------------------------------------------------------
 
-def _get_final_estims_gpu(gFit, timeseries_data, stimulus, hrf, indices, nvoxs,
+def _get_final_estims_gpu(gFit, timeseries_data, stimulus, indices, nvoxs,
                            n_iter=300, lr=0.005, sub_batch=None):
     """
     GPU-accelerated batch final fit using CuPy + Adam.
@@ -248,19 +240,17 @@ def _get_final_estims_gpu(gFit, timeseries_data, stimulus, hrf, indices, nvoxs,
     """
     import cupy as cp
 
-    max_deg = float(stimulus.deg_x.max())
-    nT      = stimulus.run_length #stimulus.stim_arr.shape[2]
+    max_deg = float(stimulus.deg_x0.max())
+    nT      = stimulus.stim_arr.shape[2]
 
     # Transfer stimulus to GPU once
     deg_x_gpu    = cp.asarray(stimulus.deg_x,    dtype=cp.float32)        # (H, W)
     deg_y_gpu    = cp.asarray(stimulus.deg_y,    dtype=cp.float32)        # (H, W)
-    #stim_gpu     = cp.asarray(stimulus.stim_arr, dtype=cp.float32)        # (H, W, T)
-    hrf_cpu      = hrf.astype(np.float32) #should already be float32, but just in case
+    stim_gpu     = cp.asarray(stimulus.stim_arr, dtype=cp.float32)        # (H, W, T)
+    hrf_cpu      = utils.double_gamma_hrf(0, 1.3).astype(np.float32)
     hrf_gpu      = cp.asarray(hrf_cpu)
 
-    stim_flat    = cp.asarray(stimulus.stim_arr.T,
-                            dtype=cp.float32)                             # (H*W, T)
-    #stim_gpu.reshape(-1, nT)   
+    stim_flat    = stim_gpu.reshape(-1, nT)                               # (H*W, T)
     deg_x_flat   = deg_x_gpu.ravel()                                      # (H*W,)
     deg_y_flat   = deg_y_gpu.ravel()                                      # (H*W,)
     dx           = float(cp.diff(deg_x_gpu[0, 0:2])[0])
@@ -306,7 +296,7 @@ def _get_final_estims_gpu(gFit, timeseries_data, stimulus, hrf, indices, nvoxs,
         dx_diff = deg_x_flat[None, :] - x[:, None]    # (N, H*W)
         dy_diff = deg_y_flat[None, :] - y[:, None]
         rf      = cp.exp(-(dx_diff**2 + dy_diff**2) / (2.0 * sigma[:, None]**2))
-        #rf     /= (2.0 * np.pi * sigma[:, None]**2) / (dx**2)
+        rf     /= (2.0 * np.pi * sigma[:, None]**2) / (dx**2)
 
         # Neural response: (N, H*W) @ (H*W, T) → (N, T)
         return rf @ stim_flat
@@ -317,15 +307,15 @@ def _get_final_estims_gpu(gFit, timeseries_data, stimulus, hrf, indices, nvoxs,
         response : (N, T) linear neural response
         n        : (N,)   CSS exponent
         """
-        response = response ** n[:, None]
+        response = cp.abs(response) ** n[:, None]
 
         # Batch HRF convolution via FFT
         R_fft = cp.fft.rfft(response, n=nfft)                            # (N, nfft//2+1)
         pred  = cp.fft.irfft(R_fft * hrf_fft[None, :])[:, :nT]          # (N, T)
 
         # Normalize to percent signal change
-        # mu   = pred.mean(axis=1, keepdims=True)
-        # pred = (pred - mu) / (cp.abs(mu) + 1e-8)
+        mu   = pred.mean(axis=1, keepdims=True)
+        pred = (pred - mu) / (cp.abs(mu) + 1e-8)
         return pred
 
     def _forward_batch(params):
@@ -420,7 +410,7 @@ def _get_final_estims_gpu(gFit, timeseries_data, stimulus, hrf, indices, nvoxs,
     pbar.close()
 
     # Free GPU memory
-    del deg_x_gpu, deg_y_gpu, hrf_gpu, stim_flat, deg_x_flat
+    del deg_x_gpu, deg_y_gpu, stim_gpu, hrf_gpu, stim_flat, deg_x_flat
     del deg_y_flat, hrf_fft
     cp.get_default_memory_pool().free_all_blocks()
 

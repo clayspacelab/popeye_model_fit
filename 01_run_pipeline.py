@@ -21,13 +21,14 @@ Usage:
 
 import argparse
 import numpy as np
+import ctypes
 import time
 import os
 
 from itertools import product
 
-import sweepea.utilities as utils
-from sweepea.visual_stimulus import VisualStimulus
+import popeye.utilities_cclab as utils
+from popeye.visual_stimulus import VisualStimulus
 
 # Import pipeline modules
 from H01_config import DEFAULT_PARAMS, GRID_DEFAULTS, set_paths
@@ -86,18 +87,18 @@ def build_grid_space(stimulus, Ns):
         Constrained grid points as list of (x, y, sigma, n).
     """
     x_grid = np.concatenate((
-        np.linspace(-stimulus.deg_x.max(), stimulus.deg_x.max(), Ns // 2),
-        np.geomspace(-stimulus.deg_x.max(), -2 * stimulus.deg_x.max(), Ns // 4),
-        np.geomspace(stimulus.deg_x.max(), 2 * stimulus.deg_x.max(), Ns // 4),
+        np.linspace(-stimulus.deg_x0.max(), stimulus.deg_x0.max(), Ns // 2),
+        np.geomspace(-stimulus.deg_x0.max(), -2 * stimulus.deg_x0.max(), Ns // 4),
+        np.geomspace(stimulus.deg_x0.max(), 2 * stimulus.deg_x0.max(), Ns // 4),
     ))
     y_grid = np.concatenate((
-        np.linspace(-stimulus.deg_y.max(), stimulus.deg_y.max(), Ns // 2),
-        np.geomspace(-stimulus.deg_y.max(), -2 * stimulus.deg_y.max(), Ns // 4),
-        np.geomspace(stimulus.deg_y.max(), 2 * stimulus.deg_y.max(), Ns // 4),
+        np.linspace(-stimulus.deg_y0.max(), stimulus.deg_y0.max(), Ns // 2),
+        np.geomspace(-stimulus.deg_y0.max(), -2 * stimulus.deg_y0.max(), Ns // 4),
+        np.geomspace(stimulus.deg_y0.max(), 2 * stimulus.deg_y0.max(), Ns // 4),
     ))
     s_grid = np.concatenate((
         np.linspace(0.1, 5, 3 * Ns // 4),
-        np.geomspace(5, stimulus.deg_x.max(), Ns // 4),
+        np.geomspace(5, stimulus.deg_x0.max(), Ns // 4),
     ))
     n_grid = np.asarray(GRID_DEFAULTS['n_grid_values'])
 
@@ -154,15 +155,13 @@ def run_volumetric_pipeline(args, p):
     # ── Step 6: Grid predictions ──────────────────────────────────────────
     gridPath = p['gridfit_path'].replace('.npy', f'_{Ns}.npy')
     tstamp_start = time.perf_counter()
-    hrf = utils.double_gamma_hrf(0, tr_length) #generate hrf. Also used for final fit.
-
 
     if os.path.exists(gridPath):
         print(f"Loading grid predictions from {gridPath}")
         grid_preds = np.load(gridPath)
     else:
         print("Generating grid predictions...")
-        grid_preds = getGridPreds(grid_space, stimulus.params, gridPath, nTRs, hrf)
+        grid_preds = getGridPreds(grid_space, stimulus, gridPath, nTRs)
 
     tstamp_gridpred = time.perf_counter()
     print_time(tstamp_start, tstamp_gridpred, 'Grid predictions')
@@ -184,7 +183,7 @@ def run_volumetric_pipeline(args, p):
     if not args.skip_final_fit:
         print('Starting final fit...')
         fFit = np.empty((*scan_data.shape[:3], 9))
-        fFit = get_final_estims(gFit, param_width, timeseries_data, stimulus.params, hrf,
+        fFit = get_final_estims(gFit, param_width, timeseries_data, stimulus,
                                 fFit, indices, use_gpu=args.use_gpu)
         tstamp_finalfit = time.perf_counter()
         print_time(tstamp_gridfit, tstamp_finalfit, 'Final fit')
@@ -237,15 +236,13 @@ def run_surface_pipeline(args, p, funcFiles):
     # ── Step 6: Grid predictions ──────────────────────────────────────────
     gridPath = p['gridfit_path'].replace('.npy', f'_{Ns}.npy')
     tstamp_start = time.perf_counter()
-    hrf = utils.double_gamma_hrf(0, tr_length) #generate hrf. Also used for final fit.
-
 
     if os.path.exists(gridPath):
         print(f"Loading grid predictions from {gridPath}")
         grid_preds = np.load(gridPath)
     else:
         print("Generating grid predictions...")
-        grid_preds = getGridPreds(grid_space, stimulus.params, gridPath, nTRs, hrf)
+        grid_preds = getGridPreds(grid_space, stimulus, gridPath, nTRs)
 
     tstamp_gridpred = time.perf_counter()
     print_time(tstamp_start, tstamp_gridpred, 'Grid predictions')
@@ -284,7 +281,7 @@ def run_surface_pipeline(args, p, funcFiles):
                 for i in range(4)
             ]
             fFit = np.empty((data.shape[0], 9))
-            fFit = get_final_estims(gFit, param_width, data, stimulus.params, hrf,
+            fFit = get_final_estims(gFit, param_width, data, stimulus,
                                     fFit, indices, use_gpu=args.use_gpu)
             tstamp_finalfit = time.perf_counter()
             print_time(tstamp_gridfit, tstamp_finalfit, f'Final fit ({hemi_name})')
