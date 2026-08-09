@@ -54,8 +54,8 @@ def generate_grid_prediction(args):
         # Convolve with HRF
         predsig = fftconvolve(response, utils.double_gamma_hrf(0, 1.3))[0:len(response)]
 
-        # Normalize to percent signal change (matches data units from remove_trend)
-        predsig = (predsig - np.mean(predsig)) / np.mean(predsig) * 100
+        # Normalize to percent signal change
+        predsig = (predsig - np.mean(predsig)) / np.mean(predsig)
 
         return predsig
 
