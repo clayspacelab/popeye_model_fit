@@ -78,7 +78,7 @@ def detect_host():
     """
     hostname = socket.gethostname()
 
-    if hostname in ('syndrome', 'zod.psych.nyu.edu', 'zod'):
+    if hostname in ('syndrome', 'zod.psych.nyu.edu', 'zod','doom.psych.nyu.edu'):
         return 'lab_local'
     elif 'vader' in hostname:
         return 'vader'

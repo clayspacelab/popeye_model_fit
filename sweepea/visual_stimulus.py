@@ -12,10 +12,14 @@ from collections import namedtuple
 from scipy.ndimage.interpolation import zoom
 
 
+def dva(screen_width, viewing_distance):
+    """Computes the visual angle of the display in degrees."""
+    #https://www.sr-research.com/eye-tracking-blog/background/visual-angle/
+    return 2 * np.degrees(np.arctan(screen_width / (2 * viewing_distance)))
 
-def pixels_per_degree(pixels_across, screen_width, viewing_distance):
-    """Computes the number of pixels per degree of visual angle."""    
-    return np.pi*pixels_across/np.arctan(screen_width/viewing_distance/2.0)/360.0
+def degrees_per_gridpoint(gridpoints_across, screen_width, viewing_distance):
+    """Computes the number of degrees of visual angle per grid point."""    
+    return dva(screen_width, viewing_distance) / gridpoints_across
 
 
 def stim2d(stim_arr):
@@ -24,24 +28,24 @@ def stim2d(stim_arr):
     
     return stim_arr_long
     
-def generate_coordinate_matrices(pixels_across, pixels_down, ppd, scale_factor=1, dtype=np.float32):
+def generate_coordinate_matrices(gridpoints_across, gridpoints_down, dpp, scale_factor=1, dtype=np.float32):
     
     """Creates coordinate matrices for representing the visual field in terms
        of degrees of visual angle.
        
-    This function takes the screen dimensions, the pixels per degree, and a
+    This function takes the screen dimensions, the grid points per degree, and a
     scaling factor in order to generate a pair of ndarrays representing the
     horizontal and vertical extents of the visual display in degrees of visual
     angle.
     
     Parameters
     ----------
-    pixels_across : int
-        The number of pixels along the horizontal extent of the visual display.
-    pixels_down : int
-        The number of pixels along the vertical extent of the visual display.
-    ppd: float
-        The number of pixels that spans 1 degree of visual angle.  This number
+    gridpoints_across : int
+        The number of grid points along the horizontal extent of the visual display.
+    gridpoints_down : int
+        The number of grid points along the vertical extent of the visual display.
+    dpp: float
+        The number of degrees of visual angle that spans 1 grid point.  This number
         is computed using the display width and the viewing distance.  See the
         config.init_config for details. 
     scale_factor : float
@@ -60,15 +64,15 @@ def generate_coordinate_matrices(pixels_across, pixels_down, ppd, scale_factor=1
         terms of degrees of visual angle.
     """
     
-    [X,Y] = np.meshgrid(np.arange(np.round(pixels_across*scale_factor)),
-                        np.arange(np.round(pixels_down*scale_factor)))
+    [X,Y] = np.meshgrid(np.arange(np.round(gridpoints_across*scale_factor)),
+                        np.arange(np.round(gridpoints_down*scale_factor)))
                         
                         
-    deg_x = (X-np.round(pixels_across*scale_factor)/2)/(ppd*scale_factor)
-    deg_y = (Y-np.round(pixels_down*scale_factor)/2)/(ppd*scale_factor)
+    deg_x = (X-np.round(gridpoints_across*scale_factor)/2)*(dpp*scale_factor)
+    deg_y = (Y-np.round(gridpoints_down*scale_factor)/2)*(dpp*scale_factor)
     
-    deg_x += 0.5/(ppd*scale_factor)
-    deg_y += 0.5/(ppd*scale_factor)
+    deg_x += 0.5*(dpp*scale_factor)
+    deg_y += 0.5*(dpp*scale_factor)
     
     return deg_x.astype(dtype), np.flipud(deg_y).astype(dtype)
 
@@ -82,7 +86,7 @@ def resample_stimulus(stim_arr, scale_factor=0.05, mode='nearest',
     specified `scale_factor`.  The stimulus array is assumed to be a three
     dimensional ndarray representing the stimulus, in screen pixel coordinates,
     over time.  The first two dimensions of `stim_arr` together represent the
-    exent of the visual display (pixels) and the last dimensions represents
+    exent of the visual display (grid points) and the last dimensions represents
     time (TRs).
 
     The underlying function used here is `scipy.ndimage.zoom`. Some arguments
@@ -157,7 +161,7 @@ class VisualStimulus:
             
         screen_width : float
             The width of the display (cm). This is used to compute the visual angle
-            for determining the pixels per degree of visual angle.
+            for determining the grid points per degree of visual angle.
         
         scale_factor : float
             The downsampling rate for ball=parking a solution. The `stim_arr` is
@@ -176,18 +180,18 @@ class VisualStimulus:
         self.interp = interp
         
         # ascertain stimulus features
-        self.pixels_across = self.stim_arr.shape[1]
-        self.pixels_down = self.stim_arr.shape[0]
+        self.gridpoints_across = self.stim_arr.shape[1]
+        self.gridpoints_down = self.stim_arr.shape[0]
         self.run_length = self.stim_arr.shape[2]
-        self.ppd = pixels_per_degree(self.pixels_across, self.screen_width, self.viewing_distance)
+        self.dpp = degrees_per_gridpoint(self.gridpoints_across, self.screen_width, self.viewing_distance)
         
         #we also want screen width in dva for computing constraints on fits
-        self.screen_dva = self.pixels_across/self.ppd 
+        self.screen_dva = dva(self.screen_width, self.viewing_distance)
 
         
         # generate coordinate matrices
-        self.deg_x, self.deg_y = generate_coordinate_matrices(self.pixels_across, 
-                                                              self.pixels_down, self.ppd, dtype=self.dtype)
+        self.deg_x, self.deg_y = generate_coordinate_matrices(self.gridpoints_across, 
+                                                              self.gridpoints_down, self.dpp, dtype=self.dtype)
 
         #convert stim_arr to 2d for faster processing
         self.stim_arr = stim2d(self.stim_arr)
@@ -205,18 +209,18 @@ class VisualStimulus:
             self.stim_arr0 = stim2d(stim_arr0)
             
             # generate the coordinate matrices
-            self.deg_x0, self.deg_y0 = generate_coordinate_matrices(self.pixels_across, self.pixels_down, self.ppd, 
+            self.deg_x0, self.deg_y0 = generate_coordinate_matrices(self.gridpoints_across, self.gridpoints_down, self.dpp, 
                                                           self.scale_factor, dtype=self.dtype)
             
         
-        # add ppd for the down-sampled stimulus
-        self.ppd0 = pixels_per_degree(self.pixels_across*self.scale_factor, self.screen_width, self.viewing_distance)
+        # add dpp for the down-sampled stimulus
+        self.dpp0 = degrees_per_gridpoint(self.gridpoints_across*self.scale_factor, self.screen_width, self.viewing_distance)
         
-        # rescale stim grids according to ppd 
+        # rescale stim grids according to dpp 
         # (this roughly follows Vista approach to give iterpretable betas in terms of psc as a function of 
         # size of stimulus, but mostly doing it for numerical reasons to keep response range consistent/in check)
-        self.stim_arr /= self.ppd**2
-        self.stim_arr0 /= self.ppd0**2
+        self.stim_arr *= self.dpp**2
+        self.stim_arr0 *= self.dpp0**2
 
         #finally package up parameters we're actually using for slimmer memory footprint during fitting
         #really this whole scheme should be rethought, but for now this is a quick fix to avoid passing around a 
