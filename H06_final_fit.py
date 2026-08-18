@@ -24,10 +24,10 @@ Key functions:
 import numpy as np
 from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
-from scipy.optimize import minimize
+from scipy.optimize import minimize,least_squares
 
 
-from H03_fit_utils import error_func
+from H03_fit_utils import error_func,error_func_lsq
 from H04_grid_predict import generate_grid_prediction
 from H05_grid_fit import overload_estimate
 
@@ -50,9 +50,14 @@ def _worker_init_finalfit(stimulus, hrf):
     _bounds   = (
         (-max_deg * 2, max_deg * 2),   # x
         (-max_deg * 2, max_deg * 2),   # y
-        (0.001, max_deg * 2),           # sigma
-        (0.001, 2.0),                   # n (CSS exponent)
+        (0.1, max_deg * 2),           # sigma
+        (0.01, 2.0),                   # n (CSS exponent)
     )
+
+    #HACK FOR NOW
+    lb = [b[0] for b in _bounds]
+    ub = [b[1] for b in _bounds]
+    _bounds = (lb, ub)
 
 
 # ---------------------------------------------------------------------------
@@ -79,49 +84,75 @@ def FinalFit_Vox(args):
     tuple of 9 floats
         Best pRF estimate found (theta, r2, rho, sigma, n, x, y, beta, baseline).
     """
-    init_estim, unscaled_data = args
+    init_estim, data = args
     stimulus = _stimulus
     bounds   = _bounds
     hrf      = _hrf
 
-    if np.isnan(unscaled_data).any():
+    if np.isnan(data).any():
         return (np.nan,) * 9
 
     best_r2  = init_estim[1]
     best_fit = tuple(init_estim)
     x0       = [init_estim[5], init_estim[6], init_estim[3], init_estim[4]]
+    #x0[3] =x0[3]**2
 
-    def pred_func(args):
-        args = (*args, stimulus, hrf)
+    def pred_func(x):
+        #xopt = x.copy()
+        #xopt[3] = np.sqrt(xopt[3])
+        args = (*x, stimulus, hrf)
         return generate_grid_prediction(args)
-    
-    try:
-        result = minimize(
-            error_func,
-            x0,
-            bounds=bounds,
-            method='L-BFGS-B',
-            args=(unscaled_data, pred_func),
-            options={'maxiter': 200, 'ftol': 1e-9, 'gtol': 1e-6},
-        )
-        overload_fin = overload_estimate(
-            result.x, unscaled_data,
-            pred_func(result.x)
-        )
-        if overload_fin[1] > best_r2:
-            best_fit = overload_fin
-    except Exception as e:
-        print(e)
-        #pass   # keep grid estimate if optimizer fails
 
-    return best_fit
+    x_scale = np.array(bounds[1])
+    sym_bounds = np.asarray(bounds[0]) == -x_scale
+    x_scale[sym_bounds]*=2
+    #x_scale[3] = 1
+    
+    #try:
+    result = least_squares(
+        error_func_lsq,
+        x0, #np.asarray(x0,dtype=np.float32),
+        bounds=bounds,
+        method='trf',
+        args=(data, pred_func),
+        x_scale=x_scale, #'jac',
+        loss='linear', #'soft_l1',
+        diff_step=[5e-5,5e-5,1e-8,5e-6]#[5e-6,5e-6,1e-8,5e-7],#[1e-5]*len(x0)
+        #f_scale=2.5,
+        #xtol=1e-10,
+        #jac='3-point',
+        #options={'maxiter': 500}#, 'ftol': 1e-9, 'gtol': 1e-6},
+    )
+    # result = minimize(
+    #     error_func,
+    #     x0,
+    #     bounds=bounds,
+    #     method='L-BFGS-B',
+    #     args=(data, pred_func),
+    #     #options={'maxiter': 500}#, 'ftol': 1e-9, 'gtol': 1e-6},
+    # )
+    #xout = result.x
+    #xout[3] = np.sqrt(xout[3])
+    overload_fin = overload_estimate(
+        result.x, data,
+        pred_func(result.x)
+    )
+    if overload_fin[1] > best_r2:
+        best_fit = overload_fin
+    # except Exception as e:
+    #     print(e)
+    #     #pass   # keep grid estimate if optimizer fails
+    # if not result.success:
+    #     print('boo!')
+
+    return best_fit,result
 
 
 # ---------------------------------------------------------------------------
 # Main dispatcher
 # ---------------------------------------------------------------------------
 
-def get_final_estims(gFit, param_width, timeseries_data, stimulus, hrf, fFit, indices,
+def get_final_estims(gFit, timeseries_data, stimulus, hrf, fFit, indices,
                      use_gpu=False, n_iter=300, lr=0.005, sub_batch=None):
     """
     Run gradient-descent refinement for all voxels/vertices.
@@ -139,9 +170,6 @@ def get_final_estims(gFit, param_width, timeseries_data, stimulus, hrf, fFit, in
     ----------
     gFit : ndarray
         Grid-fit estimates array.
-    param_width : list
-        Search width for [x, y, sigma, n] (unused in current optimizer, kept
-        for API compatibility).
     timeseries_data : ndarray
         Observed data (n_voxels, n_timepoints).
     stimulus : VisualStimulus
@@ -167,7 +195,7 @@ def get_final_estims(gFit, param_width, timeseries_data, stimulus, hrf, fFit, in
     fFit : ndarray, shape (n_voxels, 9)
     """
     nvoxs            = len(timeseries_data)
-    timeseries_data  = np.asarray(timeseries_data, dtype=np.float64)
+    timeseries_data  = np.asarray(timeseries_data, dtype=np.float32)
 
     if use_gpu:
         try:
@@ -184,6 +212,7 @@ def get_final_estims(gFit, param_width, timeseries_data, stimulus, hrf, fFit, in
     # CPU path
     # ------------------------------------------------------------------
     fFit = np.empty((nvoxs, 9))
+    fResult = np.empty(nvoxs)
 
     # Pre-unscale data in main process (once, not in each worker)
     args_list = []
@@ -192,12 +221,12 @@ def get_final_estims(gFit, param_width, timeseries_data, stimulus, hrf, fFit, in
         init_est = (gFit[idx[0], idx[1], idx[2], :] if isinstance(idx, (list, tuple))
                     else gFit[idx, :])
         y        = timeseries_data[iin]
-        beta     = float(init_est[7])
-        baseline = float(init_est[8])
-        unscaled = (y - baseline) / (beta if abs(beta) > 1e-8 else 1e-8)
-        args_list.append((np.asarray(init_est), unscaled))
+        # beta     = float(init_est[7])
+        # baseline = float(init_est[8])
+        # unscaled = (y - baseline) / (beta if abs(beta) > 1e-8 else 1e-8)
+        args_list.append((np.asarray(init_est), y))
 
-    n_workers = cpu_count()
+    n_workers = 29 #cpu_count()
     chunksize = max(1, nvoxs // (n_workers * 4))
 
     with Pool(
@@ -212,7 +241,10 @@ def get_final_estims(gFit, param_width, timeseries_data, stimulus, hrf, fFit, in
         ))
 
     for i, result in enumerate(results):
-        fFit[i, :] = result
+        fFit[i, :] = result[0]
+        fResult[i] = result[1].status
+
+    np.save('resultstatus.npy',fResult)
 
     return fFit
 

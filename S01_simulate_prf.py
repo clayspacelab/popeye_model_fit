@@ -35,7 +35,7 @@ from sweepea.visual_stimulus import VisualStimulus
 
 from H01_config import DEFAULT_PARAMS, GRID_DEFAULTS, set_paths
 from H02_dataloader import load_stimuli
-from H03_fit_utils import constraint_grids, set_dark_theme
+from H03_fit_utils import constrain_grids, set_dark_theme
 from H04_grid_predict import generate_grid_prediction
 
 
@@ -182,7 +182,7 @@ def main():
     n_space = np.linspace(0.01, 1, Ns)
 
     params_space_orig = list(product(x_space, y_space, s_space, n_space))
-    params_space = constraint_grids(params_space_orig, stimulus)
+    params_space = constrain_grids(params_space_orig, stimulus)
 
     # Sample random voxels
     nvoxs = args.n_voxels

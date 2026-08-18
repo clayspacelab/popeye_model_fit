@@ -12,6 +12,7 @@ Key functions:
 import numpy as np
 import sweepea.utilities as utils
 from multiprocessing import Pool, cpu_count
+from scipy.stats import zscore
 
 
 # ---------------------------------------------------------------------------
@@ -67,9 +68,14 @@ def generate_grid_prediction(args):
         # Convolve with HRF
         predsig = np.convolve(response, hrf)[0:len(response)]
 
-        # Normalize to percent signal change [not needed b/c we do regression in fitting]
-        # mean_predsig = np.mean(predsig)
-        # predsig = (predsig - mean_predsig) / mean_predsig
+        # zscore so we can simplify all the regression 
+        predsig = zscore(predsig)
+
+        # this is a way to deal w/ bad parameter combinations. A better way would be to avoid them 
+        # entirely through sensible bounds/constraints
+        if not np.isfinite(predsig).all():
+            predsig = np.zeros_like(predsig)
+
 
         return predsig
 
@@ -104,11 +110,11 @@ def getGridPreds(grid_space, stimulus, gridPath, nTRs, hrf):
     grid_preds = np.empty((len(grid_space), nTRs))
     print(f"Starting prediction generation for {len(grid_space)} grid points...")
 
-    n_workers = cpu_count()
+    n_workers = 29 #cpu_count()
     chunksize = max(1, grid_preds.shape[0] // (n_workers * 4))
 
     with Pool(
-            cpu_count(),
+            n_workers,
             initializer=_worker_init_gridpredict,
             initargs=(stimulus, hrf)
         ) as pool:

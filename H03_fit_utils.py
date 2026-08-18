@@ -5,14 +5,16 @@ Contains:
     set_dark_theme()     — Apply consistent dark background style for matplotlib
     print_time()         — Formatted elapsed time printing
     remove_trend()       — Signal detrending and percent signal change
-    constraint_grids()   — Eccentricity-based grid space pruning
+    constrain_grids()   — Eccentricity-based grid space pruning
     generate_bounds()    — Parameter bounds for optimization
     error_func()         — Objective function for scipy.optimize.minimize
 """
 
+import warnings
 import numpy as np
 import matplotlib.pyplot as plt
 import sweepea.utilities as utils
+from itertools import product
 from scipy.signal import detrend
 from scipy.linalg import lstsq
 
@@ -86,8 +88,106 @@ def remove_trend(signal, method='all'):
     else:
         raise ValueError(f"Unknown detrend method: '{method}'")
 
+#adapted from vista rmSpaceSigmas.m
+def linlogspace(start, stop, num, border, pctlin, reflect=False):
+    """
+    Generate spacing with linear section up to border, then log spacing after.
+    
+    Adapted from mrVista's rmSpaceSigmas.m. Linear spacing from `start` to 
+    `border`, then log spacing from `border` to `stop`.
+    
+    Parameters
+    ----------
+    start : float
+        Minimum value (minRF).
+    stop : float
+        Maximum value (maxRF).
+    num : int
+        Total number of points to generate.
+    border : float
+        Transition point between linear and log spacing.
+    pctlin : float
+        Percentage of points in the linear segment.
+    reflect : bool
+        Reflect the values about zero (i.e. values go from -stop:stop).
+        Note: Will not give you the N you request w/ odd values of N or start==0, but you can do it if you want.
+    
+    Returns
+    -------
+    ndarray
+        Spaced values from start to stop.
+    """
 
-def constraint_grids(grid_space_orig, stimulus):
+    if reflect:
+        assert (start>=0) and (stop>=0)
+        if start==0:
+            warnings.warn('Will return N-1 points if start==0 and reflect=True')
+        if np.mod(num,2) == 1:
+            warnings.warn('Will return N-1 points if N is odd and reflect=True.')
+        num = num//2
+    
+    if stop <= border:
+        # All linear if stop is within border
+        return np.linspace(start, stop, num)
+
+    # If border very close to stop, ignore pctlin
+    r = border / stop
+    r = max(r, pctlin)
+    # Number of points in each section
+    h1 = int(np.floor(num * r))       # linear points
+    h2 = int(np.ceil(num * np.round(1 - r,decimals=3)))  # log points (round to handle floating point slop)
+    assert h1+h2 == num
+    
+    # Linear section: start to border (exclude last point to avoid duplication)
+    tmp = np.linspace(start, border, h1 + 1)
+    s_lin = tmp[:-1]
+    
+    # Log section: border to stop
+    s_log = np.geomspace(border, stop, h2)
+    
+    # Concatenate and return
+    out = np.concatenate((s_lin, s_log))
+    if not reflect:
+        return out
+    else:
+        return np.sort(np.unique(np.concatenate((-out, out))))   
+
+def _grid_axis_from_params(params):
+    space = params['space']
+    p = params.copy()
+    del p['space']
+    if space == 'lin':
+        return np.linspace(**p)
+    elif space=='log':
+        return np.geomspace(**p)
+    elif space=='linlog':
+        return linlogspace(**p)
+    else:
+        raise ValueError('Unknkown grid spacing specified.')
+
+def _set_param_minmax(grid_params,param, min_value=None, max_value=None):
+    if min_value is not None:
+        grid_params[param].update({'start':min_value})
+    if max_value is not None:
+        grid_params[param].update({'stop':max_value})
+
+def _set_param_gridN(grid_params,N,param_list=('x','y','s')):
+    for p in param_list:
+        grid_params[p].update({'num': N})
+
+def generate_grids(grid_params,constraint_func=None,*args):
+    if isinstance(grid_params,dict):
+        params = list(grid_params.values())
+    else:
+        params = grid_params.copy()
+
+    grid_space_orig = np.array(list(product(*[_grid_axis_from_params(x) for x in params])), dtype=float)
+    grid_space_orig = np.round(grid_space_orig,4)
+
+    return grid_space_orig if constraint_func is None else constraint_func(grid_space_orig,*args)
+
+    
+def constrain_grids(grid_space_orig, stimulus):
     """
     Remove grid points that fall outside the stimulus field of view.
 
@@ -116,7 +216,7 @@ def constraint_grids(grid_space_orig, stimulus):
 
     mask = (distances < max_dist1) & (distances < max_dist2)
     grid_space = grid_space_orig[mask]
-    return grid_space.tolist()
+    return grid_space #.tolist()
 
 
 def generate_bounds(init_estim, param_width):
@@ -171,10 +271,53 @@ def error_func(parameters, data, objective_function):
     #unscaled data approach.
 
     prediction = objective_function(parameters)
+
+    #assert not np.any(np.isnan(prediction)), "%s" % parameters
+
+    r2 = (np.dot(prediction,data)/len(prediction))**2
+
+    error = (1-r2) * np.dot(data,data) #backing out sse from r2 and sst
+
+    #(1-r2)*sst = sse?
     # X = np.vstack((np.ones(len(prediction)), prediction)).T
     # betas, *_ = lstsq(X, data, lapack_driver='gelsy')     
     # residuals = data - np.dot(X, betas)
-    residuals = data - prediction
-    error = residuals.dot(residuals)
+    # #residuals = data - prediction
+    # error_ = residuals.dot(residuals)
+
+    # if not np.allclose(error,error_):
+    #     print('foo!')
+    # else:
+    #     print('bar!')
+
     
+    return error
+
+def error_func_lsq(parameters, data, objective_function):
+    """
+    Error function for scipy.optimize.least_squares.
+
+    Parameters
+    ----------
+    parameters : array-like
+        Current (x, y, sigma, n) values.
+    data : ndarray
+        Observed timeseries.
+    objective_function : callable
+        Function that generates predicted timeseries from parameters.
+
+    Returns
+    -------
+    float
+        vector of residuals.
+    """
+
+    prediction = objective_function(parameters)
+
+    #assert not np.any(np.isnan(prediction)), "%s" % parameters
+
+    slope = np.dot(prediction,data)/len(prediction)
+
+    error = data - slope*prediction
+
     return error

@@ -34,7 +34,7 @@ from H01_config import DEFAULT_PARAMS, GRID_DEFAULTS, set_paths
 from H02_dataloader import (load_stimuli, load_volumetric_data,
                              load_surface_data, extract_brainmask_voxels,
                              save2gifti, save2nifti)
-from H03_fit_utils import print_time, remove_trend, constraint_grids
+from H03_fit_utils import print_time, remove_trend, constrain_grids
 from H04_grid_predict import getGridPreds
 from H05_grid_fit import get_grid_estims
 from H06_final_fit import get_final_estims
@@ -102,7 +102,7 @@ def build_grid_space(stimulus, Ns):
     n_grid = np.asarray(GRID_DEFAULTS['n_grid_values'])
 
     grid_space_orig = list(product(x_grid, y_grid, s_grid, n_grid))
-    grid_space = constraint_grids(grid_space_orig, stimulus)
+    grid_space = constrain_grids(grid_space_orig, stimulus)
 
     return grid_space
 

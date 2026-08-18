@@ -20,6 +20,7 @@ import sys
 import pickle
 import traceback
 from datetime import datetime
+from copy import deepcopy
 
 import numpy as np
 import matplotlib
@@ -32,9 +33,9 @@ from itertools import product
 import sweepea.utilities as utils
 from sweepea.visual_stimulus import VisualStimulus
 
-from H01_config import DEFAULT_PARAMS, GRID_DEFAULTS, set_paths, get_gridfit_path
+from H01_config import DEFAULT_PARAMS, GRID_DEFAULTS, set_paths, get_gridfit_path, GRID_PARAMS
 from H02_dataloader import load_stimuli, save2nifti
-from H03_fit_utils import print_time, remove_trend, constraint_grids, set_dark_theme
+from H03_fit_utils import print_time, remove_trend, constrain_grids, set_dark_theme, generate_grids,_set_param_minmax,_set_param_gridN
 from H04_grid_predict import getGridPreds
 from H05_grid_fit import get_grid_estims
 from H06_final_fit import get_final_estims
@@ -84,6 +85,8 @@ def parse_args():
                         help='Enable GPU acceleration')
     parser.add_argument('--skip-final-fit', action='store_true',
                         help='Skip the final fit step')
+    parser.add_argument('--skip-grid-fit', action='store_true',
+                    help='Skip the grid fit step and load previous prediction')
     return parser.parse_args()
 
 
@@ -285,6 +288,11 @@ def _run(args, codeStartTime, p, params):
 
     # Set up for volumetric-style fitting (1x1xN pseudo-volume)
     timeseries_data = scan_data
+    timeseries_data = stats.zscore(timeseries_data,axis=-1) #should build into remove_trend, but still testsing!
+    # fig,ax=plt.subplots(nrows=2,ncols=1)
+    # ax[0].plot(timeseries_data[0,:])
+    # ax[1].plot(scan_data[0,:])
+    # plt.savefig('foo.png', dpi=300, bbox_inches='tight')
     indices = [(0, 0, i) for i in range(nvoxs)]
     print(f"Running model-fit on {nvoxs} voxels")
 
@@ -307,34 +315,46 @@ def _run(args, codeStartTime, p, params):
 
     # Build grid
     Ns = args.grid_size
-    x_grid = np.concatenate((
-        np.linspace(-stimulus.deg_x.max(), stimulus.deg_x.max(), Ns // 2),
-        np.geomspace(-stimulus.deg_x.max(), -2 * stimulus.deg_x.max(), Ns // 4),
-        np.geomspace(stimulus.deg_x.max(), 2 * stimulus.deg_x.max(), Ns // 4),
-    ))
-    y_grid = np.concatenate((
-        np.linspace(-stimulus.deg_y.max(), stimulus.deg_y.max(), Ns // 2),
-        np.geomspace(-stimulus.deg_y.max(), -2 * stimulus.deg_y.max(), Ns // 4),
-        np.geomspace(stimulus.deg_y.max(), 2 * stimulus.deg_y.max(), Ns // 4),
-    ))
-    s_grid = np.concatenate((
-        np.linspace(0.1, 5, 3 * Ns // 4),
-        np.geomspace(5, stimulus.deg_x.max(), Ns // 4),
-    ))
+
+    grid_params = deepcopy(GRID_PARAMS)
+    xy_scale = GRID_DEFAULTS['XY_scale']
+    _set_param_gridN(grid_params,Ns)
+    _set_param_minmax(grid_params,'x',stimulus.deg_x.min()*xy_scale,stimulus.deg_x.max()*xy_scale)
+    _set_param_minmax(grid_params,'y',stimulus.deg_y.min()*xy_scale,stimulus.deg_y.max()*xy_scale)
+    _set_param_minmax(grid_params,'s',None,stimulus.deg_x.max())
+
+    grid_space = generate_grids(grid_params,constrain_grids,stimulus)
+
+
+    # x_grid = np.concatenate((
+    #     np.linspace(-stimulus.deg_x.max(), stimulus.deg_x.max(), Ns // 2),
+    #     np.geomspace(-stimulus.deg_x.max(), -2 * stimulus.deg_x.max(), Ns // 4),
+    #     np.geomspace(stimulus.deg_x.max(), 2 * stimulus.deg_x.max(), Ns // 4),
+    # ))
+    # y_grid = np.concatenate((
+    #     np.linspace(-stimulus.deg_y.max(), stimulus.deg_y.max(), Ns // 2),
+    #     np.geomspace(-stimulus.deg_y.max(), -2 * stimulus.deg_y.max(), Ns // 4),
+    #     np.geomspace(stimulus.deg_y.max(), 2 * stimulus.deg_y.max(), Ns // 4),
+    # ))
+    # s_grid = np.concatenate((
+    #     np.linspace(0.1, 5, 3 * Ns // 4),
+    #     np.geomspace(5, stimulus.deg_x.max(), Ns // 4),
+    # ))
+
     # Use the finer 10-value CSS-exponent grid (shared with S03) — the exponent
     # is the parameter most sensitive to grid resolution.
-    n_grid = np.asarray(GRID_DEFAULTS['n_grid_values_fine'])
-    grid_space_orig = list(product(x_grid, y_grid, s_grid, n_grid))
-    grid_space = constraint_grids(grid_space_orig, stimulus)
+    # n_grid = np.asarray(GRID_DEFAULTS['n_grid_values_fine'])
+    # grid_space_orig = list(product(x_grid, y_grid, s_grid, n_grid))
+    # grid_space = constrain_grids(grid_space_orig, stimulus)
     print(f'Grid space: {len(grid_space)} points '
-          f'(n-grid resolution = {len(n_grid)})')
+          f'(n-grid resolution = {grid_params['n']['num']})')
 
-    param_width = [np.mean(np.diff(x_grid)), np.mean(np.diff(y_grid)),
-                   np.mean(np.diff(s_grid)), np.mean(np.diff(n_grid))]
+    # param_width = [np.mean(np.diff(x_grid)), np.mean(np.diff(y_grid)),
+    #                np.mean(np.diff(s_grid)), np.mean(np.diff(n_grid))]
 
     # Grid predictions
     tstamp_start = time.perf_counter()
-    gridfit_path = get_gridfit_path(p, Ns, n_res=len(n_grid))
+    gridfit_path = get_gridfit_path(p, Ns, n_res=grid_params['n']['num'])
     hrf = utils.double_gamma_hrf(0, params['tr_length']) 
     if os.path.exists(gridfit_path):
         print(f"Loading grid predictions from disk ({gridfit_path})")
@@ -347,36 +367,44 @@ def _run(args, codeStartTime, p, params):
     print_time(tstamp_start, tstamp_gridpred, 'Grid predictions')
 
     # Grid fit
-    print('Starting grid fit...')
-    RF_ss5_gFit = np.empty((1, 1, nvoxs, 9))
-    RF_ss5_gFit = get_grid_estims(grid_preds, grid_space, timeseries_data,
-                                   RF_ss5_gFit, indices, use_gpu=args.use_gpu)
-    tstamp_gridfit = time.perf_counter()
-    print_time(tstamp_gridpred, tstamp_gridfit, 'Grid fit')
-
-    # Save and plot grid fit
     sim_fit_dir = os.path.join(p['pRF_data'], 'Simulation', 'popeyeFit')
-    os.makedirs(sim_fit_dir, exist_ok=True)
+    if not args.skip_grid_fit:
+        print('Starting grid fit...')
+        RF_ss5_gFit = np.empty((1, 1, nvoxs, 9))
+        RF_ss5_gFit = get_grid_estims(grid_preds, grid_space, timeseries_data,
+                                    RF_ss5_gFit, indices, use_gpu=args.use_gpu)
+        tstamp_gridfit = time.perf_counter()
+        print_time(tstamp_gridpred, tstamp_gridfit, 'Grid fit')
 
-    gfit_save_path = os.path.join(sim_fit_dir, f'RF_ss5_gFit_popeye_Ns{Ns}.npy')
-    np.save(gfit_save_path, RF_ss5_gFit[0, 0, :, :])
-    print(f"Grid-fit estimates saved to {gfit_save_path}")
+        # Save and plot grid fit
+        sim_fit_dir = os.path.join(p['pRF_data'], 'Simulation', 'popeyeFit')
+        os.makedirs(sim_fit_dir, exist_ok=True)
 
-    plot_comparison(trueFit_data, RF_ss5_gFit[0, 0, :, :],
-                    f'Grid-fit (Ns={Ns})',
-                    os.path.join(fig_dir, f'gridfit_comparison_Ns{Ns}.png'),
-                    tfsp=tfsp)
+        gfit_save_path = os.path.join(sim_fit_dir, f'RF_ss5_gFit_popeye_Ns{Ns}.npy')
+        np.save(gfit_save_path, RF_ss5_gFit[0, 0, :, :])
+        print(f"Grid-fit estimates saved to {gfit_save_path}")
+
+        plot_comparison(trueFit_data, RF_ss5_gFit[0, 0, :, :],
+                        f'Grid-fit (Ns={Ns})',
+                        os.path.join(fig_dir, f'gridfit_comparison_Ns{Ns}.png'),
+                        tfsp=tfsp)
 
     # Final fit (optional)
     if not args.skip_final_fit:
         print('Starting final fit...')
+        if args.skip_grid_fit:
+            RF_ss5_gFit = np.load(os.path.join(sim_fit_dir,f'RF_ss5_gFit_popeye_Ns{Ns}.npy'))
+            RF_ss5_gFit = RF_ss5_gFit[np.newaxis,np.newaxis,:,:] 
         RF_ss5_fFit = np.empty((1, 1, nvoxs, 9))
-        RF_ss5_fFit = get_final_estims(RF_ss5_gFit, param_width, timeseries_data,
+        RF_ss5_fFit = get_final_estims(RF_ss5_gFit, timeseries_data,
                                         stimulus.params, hrf, RF_ss5_fFit, indices,
                                         use_gpu=args.use_gpu)
         RF_ss5_fFit = RF_ss5_fFit.reshape(1, 1, nvoxs, 9)  # restore 4D shape
         tstamp_finalfit = time.perf_counter()
-        print_time(tstamp_gridfit, tstamp_finalfit, 'Final fit')
+        if args.skip_grid_fit:
+            print_time(tstamp_gridpred, tstamp_finalfit, 'Final fit')
+        else:
+            print_time(tstamp_gridfit, tstamp_finalfit, 'Final fit')
 
         ffit_save_path = os.path.join(sim_fit_dir, f'RF_ss5_fFit_popeye_Ns{Ns}.npy')
         np.save(ffit_save_path, RF_ss5_fFit[0, 0, :, :])

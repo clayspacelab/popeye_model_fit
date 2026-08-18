@@ -26,10 +26,30 @@ DEFAULT_PARAMS = {
 # Grid search defaults
 GRID_DEFAULTS = {
     'Ns': 50,                 # grid density
+    'XY_scale': 2,         # how many times beyond stimulus to allow x,y positions of prf
     'n_grid_values': [0.25, 0.5, 0.75, 1.0],  # coarse CSS exponent grid (subject pipeline)
     # Finer 10-value CSS exponent grid used by the simulation scripts (S02/S03),
     # since the exponent is the parameter most sensitive to grid resolution.
     'n_grid_values_fine': np.round(np.linspace(0.25, 1.0, 10), 4).tolist(),
+}
+
+GRID_PARAMS = {'x': {'space':'lin',
+                'num':GRID_DEFAULTS['Ns'],
+                },
+            'y': {'space':'lin',
+                'num':GRID_DEFAULTS['Ns'],
+                },
+            's': {'space':'linlog',
+                'num':GRID_DEFAULTS['Ns'],
+                'start':0.1,
+                'border':3.0,
+                'pctlin':0.7
+                },
+            'n': {'space':'lin',
+                'num':10,
+                'start':0.25,
+                'stop':1.0
+                },
 }
 
 def get_gridfit_path(p, Ns=None, n_res=None):

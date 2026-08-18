@@ -20,6 +20,7 @@ import numpy as np
 from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
 from scipy.linalg import lstsq
+import scipy.stats as st
 
 
 # Module-level globals populated by the Pool worker initializer
@@ -65,23 +66,66 @@ def overload_estimate(estimate, data, prediction, use_gpu=False):
     if use_gpu:
         return _overload_estimate_gpu(estimate, data, prediction)
 
-    X = np.vstack((np.ones(len(prediction)), prediction)).T
+    # X = np.vstack((np.ones(len(prediction)), prediction)).T
     # XtX = np.dot(X.T, X)
     # XtY = np.dot(X.T, data)
     # betas = np.linalg.solve(XtX, XtY)
-    #this is safer (handles rank-deficient matrices) and potentially faster
-    betas, *_ = lstsq(X, data, lapack_driver='gelsy')  # returns (beta, residuals, rank, s)
-    #same as computing correlation but I'm hoping a little faster and can be scaled up to additional regressors
-    residuals = data - np.dot(X, betas)
-    data_dm = data - np.mean(data)
-    r2 = 1 - (np.dot(residuals, residuals) / np.dot(data_dm, data_dm))
+    # #this is safer (handles rank-deficient matrices) and potentially faster
+    # betas, *_ = lstsq(X, data, lapack_driver='gelsy')  # returns (beta, residuals, rank, s)
+    # #same as computing correlation but I'm hoping a little faster and can be scaled up to additional regressors
+    # residuals = data - np.dot(X, betas)
+    # data_dm = data - np.mean(data)
+    # r2_ = 1 - (np.dot(residuals, residuals) / np.dot(data_dm, data_dm))
     # scaled_prediction = np.dot(X, betas)
     # r2 = np.corrcoef(data, scaled_prediction)[0, 1]**2
+
+    slope = np.dot(prediction,data)/len(prediction)
+    r2 = slope**2
+
+    #this would be the way to get intercept, but w/ z-score any deviation from zero is numerical slop
+    #intercept = np.mean(data) - slope*np.mean(prediction)
+    intercept = 0
+    # assert np.allclose(slope, betas[1])
+    # assert np.allclose(r2,r2_)
+
+    #### testing z-score version CODE BLOCK
+    #A few notes:
+    # zr_bn is fastest. 
+    # lstsq doesn't work properly if design matrix isn't float64.
+    # intecept calc may not match exactly between methods to allclose precision if intercpt is basically zero
+    # zdata = st.zscore(data)
+    # zpred = st.zscore(prediction)
+    # dp_cov = np.cov(zdata,zpred,ddof=0)[0,1]
+    # zr_b = np.dot(zpred,zdata)/np.dot(zpred,zpred)
+    # zr_bn = np.dot(zpred,zdata)/len(zpred)
+    # zr_bm = np.mean(zpred*zdata)
+    # zr2 = zr_b**2
+    # zr_b0 = np.mean(zdata) - zr_b*np.mean(zpred)
+
+  
+    # X2 = np.vstack((np.ones(len(zpred)), zpred)).T
+    # zbetas, *_ = lstsq(X2, zdata, lapack_driver='gelsy')
+
+    # if not np.allclose(dp_cov,zr_b):
+    #     print('cov zr_b mismatch!')
+    # if not np.allclose(zr_b,zr_bn):
+    #     print('zr_b zr_bn mismatch!')
+    # if not np.allclose(zr_b,zr_bn):
+    #     print('zr_b zr_bm mismatch!')
+    # if not np.allclose(zr_b,zbetas[1]):
+    #     print('zr_b zbeta mismatch!')
+    # if not np.allclose(r2,zr2):
+    #     print('r2 zr2 mismatch!')
+    # if not np.allclose(zr_b0,zbetas[0]):
+    #     print('zr_b0 zbeta mismatch! %f' % (zr_b0-zbetas[0]))
+    # # if np.abs(zr_b0-zbetas[0]) > 1e-6:
+    # #     print('foo!')
+
     theta = np.mod(np.arctan2(estimate[1], estimate[0]), 2 * np.pi)
     rho = np.sqrt(estimate[0]**2 + estimate[1]**2)
 
     return (theta, r2, rho, estimate[2], estimate[3],
-            estimate[0], estimate[1], betas[1], betas[0])
+            estimate[0], estimate[1], slope, intercept) #betas[1], betas[0])
 
 def process_voxel(y):
     """
@@ -111,19 +155,30 @@ def process_voxel(y):
     S_xx = _S_xx
     grid_space = _grid_space
 
-    # Center the voxel timeseries
-    y_c = y - y.mean()                     # (T,)
-    S_yy = np.dot(y_c,y_c)               # scalar
+    #FOR REF
+    #slope = np.dot(prediction,data)/len(prediction)
+    #r2 = slope**2
 
-    # Vectorized OLS across all G grid points in one matmul
-    S_xy = G_centered @ y_c               # (G,)  — the hot path
-    betas1 = S_xy / S_xx                  # (G,)  OLS slope
-    sse = S_yy - betas1 * S_xy            # (G,)  SSE
+    # Center the voxel timeseries
+    # y_c = y - y.mean()                     # (T,)
+    # S_yy = np.dot(y_c,y_c)               # scalar
+
+    # # Vectorized OLS across all G grid points in one matmul
+    # S_xy = G_centered @ y_c               # (G,)  — the hot path
+    # betas1 = S_xy / S_xx                  # (G,)  OLS slope
+    # sse = S_yy - betas1 * S_xy            # (G,)  SSE
+
+    betas1 = (G_centered @ y)/G_centered.shape[1]
+    #1-r**2 in liu of full sse (variance unexplained) since only differs from see by fixed scale factor per voxel)
+    vue = 1 - betas1**2 
+    #r2 = betas1**2
+    #sse = (1-r2) * np.dot(y,y)
+    
 
     # Mask invalid fits: negative slope = pRF predicts wrong sign
-    sse[betas1 < 0] = np.inf
+    vue[betas1 < 0] = np.inf
 
-    best_grid_idx = int(np.argmin(sse))
+    best_grid_idx = int(np.argmin(vue))
     best_grid_estim = grid_space[best_grid_idx]
     best_grid_pred = G_centered[best_grid_idx]  # centered pred is fine for OLS
 
@@ -185,7 +240,7 @@ def get_grid_estims(grid_preds, grid_space, timeseries_data, gFit, indices,
     # so the ~62MB G_centered array is NOT pickled with every voxel task.
     grid_preds = np.asarray(grid_preds, dtype=np.float32)
     G_means = grid_preds.mean(axis=1, keepdims=True)   # (G, 1)
-    G_centered = grid_preds - G_means                  # (G, T)
+    G_centered = grid_preds #- G_means                  # (G, T)
     S_xx = (G_centered ** 2).sum(axis=1)               # (G,)
     S_xx[S_xx == 0] = 1e-8                             # guard flat predictions
 
@@ -195,7 +250,7 @@ def get_grid_estims(grid_preds, grid_space, timeseries_data, gFit, indices,
     voxel_args = [timeseries_data[iin] for iin in range(nvoxs)]
 
     # chunksize: amortize IPC overhead across multiple voxels per round-trip
-    n_workers = cpu_count()
+    n_workers = 29 #cpu_count()
     chunksize = max(1, nvoxs // (n_workers * 4))
 
     with Pool(

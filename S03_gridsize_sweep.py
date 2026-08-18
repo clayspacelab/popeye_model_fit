@@ -43,7 +43,7 @@ from popeye.visual_stimulus import VisualStimulus
 
 from H01_config import DEFAULT_PARAMS, GRID_DEFAULTS, set_paths, get_gridfit_path
 from H02_dataloader import load_stimuli
-from H03_fit_utils import print_time, remove_trend, constraint_grids, set_dark_theme
+from H03_fit_utils import print_time, remove_trend, constrain_grids, set_dark_theme
 from H04_grid_predict import getGridPreds
 from H05_grid_fit import get_grid_estims
 from H06_final_fit import get_final_estims
@@ -131,7 +131,7 @@ def build_grid_space(stimulus, Ns):
     n_grid = np.asarray(N_GRID_VALUES)
 
     grid_space_orig = list(product(x_grid, y_grid, s_grid, n_grid))
-    grid_space = constraint_grids(grid_space_orig, stimulus)
+    grid_space = constrain_grids(grid_space_orig, stimulus)
 
     param_width = [np.mean(np.diff(x_grid)), np.mean(np.diff(y_grid)),
                    np.mean(np.diff(s_grid)), np.mean(np.diff(n_grid))]
