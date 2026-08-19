@@ -16,7 +16,6 @@ import matplotlib.pyplot as plt
 import sweepea.utilities as utils
 from itertools import product
 from scipy.signal import detrend
-from scipy.linalg import lstsq
 
 
 def set_dark_theme():

@@ -317,35 +317,35 @@ def _run(args, codeStartTime, p, params):
     Ns = args.grid_size
 
     grid_params = deepcopy(GRID_PARAMS)
-    xy_scale = GRID_DEFAULTS['XY_scale']
-    _set_param_gridN(grid_params,Ns)
-    _set_param_minmax(grid_params,'x',stimulus.deg_x.min()*xy_scale,stimulus.deg_x.max()*xy_scale)
-    _set_param_minmax(grid_params,'y',stimulus.deg_y.min()*xy_scale,stimulus.deg_y.max()*xy_scale)
-    _set_param_minmax(grid_params,'s',None,stimulus.deg_x.max())
+    # xy_scale = GRID_DEFAULTS['XY_scale']
+    # _set_param_gridN(grid_params,Ns)
+    # _set_param_minmax(grid_params,'x',stimulus.deg_x.min()*xy_scale,stimulus.deg_x.max()*xy_scale)
+    # _set_param_minmax(grid_params,'y',stimulus.deg_y.min()*xy_scale,stimulus.deg_y.max()*xy_scale)
+    # _set_param_minmax(grid_params,'s',None,stimulus.deg_x.max())
 
-    grid_space = generate_grids(grid_params,constrain_grids,stimulus)
+    # grid_space = generate_grids(grid_params,constrain_grids,stimulus)
 
 
-    # x_grid = np.concatenate((
-    #     np.linspace(-stimulus.deg_x.max(), stimulus.deg_x.max(), Ns // 2),
-    #     np.geomspace(-stimulus.deg_x.max(), -2 * stimulus.deg_x.max(), Ns // 4),
-    #     np.geomspace(stimulus.deg_x.max(), 2 * stimulus.deg_x.max(), Ns // 4),
-    # ))
-    # y_grid = np.concatenate((
-    #     np.linspace(-stimulus.deg_y.max(), stimulus.deg_y.max(), Ns // 2),
-    #     np.geomspace(-stimulus.deg_y.max(), -2 * stimulus.deg_y.max(), Ns // 4),
-    #     np.geomspace(stimulus.deg_y.max(), 2 * stimulus.deg_y.max(), Ns // 4),
-    # ))
-    # s_grid = np.concatenate((
-    #     np.linspace(0.1, 5, 3 * Ns // 4),
-    #     np.geomspace(5, stimulus.deg_x.max(), Ns // 4),
-    # ))
+    x_grid = np.concatenate((
+        np.linspace(-stimulus.deg_x.max(), stimulus.deg_x.max(), Ns // 2),
+        np.geomspace(-stimulus.deg_x.max(), -2 * stimulus.deg_x.max(), Ns // 4),
+        np.geomspace(stimulus.deg_x.max(), 2 * stimulus.deg_x.max(), Ns // 4),
+    ))
+    y_grid = np.concatenate((
+        np.linspace(-stimulus.deg_y.max(), stimulus.deg_y.max(), Ns // 2),
+        np.geomspace(-stimulus.deg_y.max(), -2 * stimulus.deg_y.max(), Ns // 4),
+        np.geomspace(stimulus.deg_y.max(), 2 * stimulus.deg_y.max(), Ns // 4),
+    ))
+    s_grid = np.concatenate((
+        np.linspace(0.1, 5, 3 * Ns // 4),
+        np.geomspace(5, stimulus.deg_x.max(), Ns // 4),
+    ))
 
     # Use the finer 10-value CSS-exponent grid (shared with S03) — the exponent
     # is the parameter most sensitive to grid resolution.
-    # n_grid = np.asarray(GRID_DEFAULTS['n_grid_values_fine'])
-    # grid_space_orig = list(product(x_grid, y_grid, s_grid, n_grid))
-    # grid_space = constrain_grids(grid_space_orig, stimulus)
+    n_grid = np.asarray(GRID_DEFAULTS['n_grid_values_fine'])
+    grid_space_orig = list(product(x_grid, y_grid, s_grid, n_grid))
+    grid_space = constrain_grids(grid_space_orig, stimulus)
     print(f'Grid space: {len(grid_space)} points '
           f'(n-grid resolution = {grid_params['n']['num']})')
 

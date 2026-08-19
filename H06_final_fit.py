@@ -226,7 +226,7 @@ def get_final_estims(gFit, timeseries_data, stimulus, hrf, fFit, indices,
         # unscaled = (y - baseline) / (beta if abs(beta) > 1e-8 else 1e-8)
         args_list.append((np.asarray(init_est), y))
 
-    n_workers = 29 #cpu_count()
+    n_workers = cpu_count()
     chunksize = max(1, nvoxs // (n_workers * 4))
 
     with Pool(

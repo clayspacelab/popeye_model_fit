@@ -110,7 +110,7 @@ def getGridPreds(grid_space, stimulus, gridPath, nTRs, hrf):
     grid_preds = np.empty((len(grid_space), nTRs))
     print(f"Starting prediction generation for {len(grid_space)} grid points...")
 
-    n_workers = 29 #cpu_count()
+    n_workers = cpu_count()
     chunksize = max(1, grid_preds.shape[0] // (n_workers * 4))
 
     with Pool(

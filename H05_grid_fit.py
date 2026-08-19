@@ -250,7 +250,7 @@ def get_grid_estims(grid_preds, grid_space, timeseries_data, gFit, indices,
     voxel_args = [timeseries_data[iin] for iin in range(nvoxs)]
 
     # chunksize: amortize IPC overhead across multiple voxels per round-trip
-    n_workers = 29 #cpu_count()
+    n_workers = cpu_count()
     chunksize = max(1, nvoxs // (n_workers * 4))
 
     with Pool(
