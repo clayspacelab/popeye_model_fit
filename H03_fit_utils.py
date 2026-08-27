@@ -12,6 +12,8 @@ Contains:
 
 import warnings
 import numpy as np
+import jax.numpy as jnp
+#from jax.experimental import checkify
 import matplotlib.pyplot as plt
 import sweepea.utilities as utils
 from itertools import product
@@ -247,9 +249,9 @@ def generate_bounds(init_estim, param_width):
     return (x_bounds, y_bounds, sigma_bounds, n_bounds)
 
 
-def error_func(parameters, data, objective_function):
+def error_func_lsq(parameters, data, objective_function):
     """
-    Error function for scipy.optimize.minimize.
+    Error function for a least squares solver (full residual vector)
 
     Parameters
     ----------
@@ -263,36 +265,25 @@ def error_func(parameters, data, objective_function):
     Returns
     -------
     float
-        Sum of squared errors.
+        vector of residuals.
     """
-
-    #added then commented out code for computing betas here pending fully undersanding the 
-    #unscaled data approach.
 
     prediction = objective_function(parameters)
 
+    #checkify.check(prediction.ndim==1, "foo!")
+
     #assert not np.any(np.isnan(prediction)), "%s" % parameters
 
-    r2 = (np.dot(prediction,data)/len(prediction))**2
+    slope = jnp.dot(prediction, data) / prediction.shape[0]
 
-    error = (1-r2) * np.dot(data,data) #backing out sse from r2 and sst
+    #penalty = jnp.minimum(0,jnp.sum(parameters[0:2]**2)-25**2)*100
 
-    #(1-r2)*sst = sse?
-    # X = np.vstack((np.ones(len(prediction)), prediction)).T
-    # betas, *_ = lstsq(X, data, lapack_driver='gelsy')     
-    # residuals = data - np.dot(X, betas)
-    # #residuals = data - prediction
-    # error_ = residuals.dot(residuals)
+    error = data - slope*prediction
+    #error = jnp.append(data - slope*prediction,penalty)
 
-    # if not np.allclose(error,error_):
-    #     print('foo!')
-    # else:
-    #     print('bar!')
-
-    
     return error
 
-def error_func_lsq(parameters, data, objective_function):
+def error_func_lsq_np(parameters, data, objective_function):
     """
     Error function for scipy.optimize.least_squares.
 
@@ -320,3 +311,38 @@ def error_func_lsq(parameters, data, objective_function):
     error = data - slope*prediction
 
     return error
+
+
+def error_func_min(parameters, data, objective_function):
+    """
+    Error function for general minimization objective (sum squared errors)
+
+    Parameters
+    ----------
+    parameters : array-like
+        Current (x, y, sigma, n) values.
+    data : ndarray
+        Observed timeseries.
+    objective_function : callable
+        Function that generates predicted timeseries from parameters.
+
+    Returns
+    -------
+    float
+        0.5 * sum(f_i(x)**2)
+    """
+
+    prediction = objective_function(parameters)
+
+    #checkify.check(prediction.ndim==1, "foo!")
+
+    #assert not np.any(np.isnan(prediction)), "%s" % parameters
+
+    slope = jnp.dot(prediction, data) / prediction.shape[0]
+
+    #penalty = jnp.minimum(0,jnp.sum(parameters[0:2]**2)-25**2)*100
+
+    error = data - slope*prediction
+    #error = jnp.append(data - slope*prediction,penalty)
+
+    return 0.5 * jnp.dot(error,error)

@@ -43,11 +43,11 @@ GRID_PARAMS = {'x': {'space':'lin',
                 'num':GRID_DEFAULTS['Ns'],
                 'start':0.1,
                 'border':3.0,
-                'pctlin':0.7
+                'pctlin':0.6
                 },
             'n': {'space':'lin',
                 'num':10,
-                'start':0.25,
+                'start':0.1,
                 'stop':1.0
                 },
 }

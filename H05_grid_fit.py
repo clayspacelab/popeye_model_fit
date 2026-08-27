@@ -17,32 +17,20 @@ Key functions:
 """
 
 import numpy as np
-from tqdm import tqdm
-from multiprocessing import Pool, cpu_count
-from scipy.linalg import lstsq
-import scipy.stats as st
+import os
+import jax
+#jax.config.update("jax_enable_x64", True)
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.9"
+# jax.config.update("jax_debug_nans", True)
+# jax.config.update('jax_debug_infs', True)
+#jax.config.update("jax_disable_jit", True)
+#jax.config.update('jax_platform_name', 'cpu')
+import jax.numpy as jnp
 
 
-# Module-level globals populated by the Pool worker initializer
-_G_centered = None
-_S_xx = None
-_grid_space = None
-
-
-def _worker_init(G_centered, S_xx, grid_space):
-    """Initializer for each Pool worker: store shared arrays as globals."""
-    global _G_centered, _S_xx, _grid_space
-    _G_centered = G_centered
-    _S_xx = S_xx
-    _grid_space = grid_space
-
-
-# ---------------------------------------------------------------------------
-# Core computation functions (CPU)
-# ---------------------------------------------------------------------------
-def overload_estimate(estimate, data, prediction, use_gpu=False):
+def overload_estimate_jax(estimate, data, prediction):
     """
-    Compute the full pRF estimate via OLS regression.
+    Compute the full pRF estimate via covariance trick equivalent to OLS regression.
 
     Given a grid parameter estimate and its prediction, fit beta and baseline
     via ordinary least squares, then compute R² and polar coordinates.
@@ -51,95 +39,43 @@ def overload_estimate(estimate, data, prediction, use_gpu=False):
     ----------
     estimate : array-like
         Grid parameters (x, y, sigma, n) or similar.
-    data : ndarray
+    data : Array
         Observed BOLD timeseries.
-    prediction : ndarray
+    prediction : Array
         Model-predicted timeseries.
-    use_gpu : bool
-        If True, use CuPy for GPU acceleration.
 
     Returns
     -------
-    tuple of 9 floats
+    jnp Array of 9 floats
         (theta, r2, rho, sigma, n, x, y, beta, baseline)
     """
-    if use_gpu:
-        return _overload_estimate_gpu(estimate, data, prediction)
-
-    # X = np.vstack((np.ones(len(prediction)), prediction)).T
-    # XtX = np.dot(X.T, X)
-    # XtY = np.dot(X.T, data)
-    # betas = np.linalg.solve(XtX, XtY)
-    # #this is safer (handles rank-deficient matrices) and potentially faster
-    # betas, *_ = lstsq(X, data, lapack_driver='gelsy')  # returns (beta, residuals, rank, s)
-    # #same as computing correlation but I'm hoping a little faster and can be scaled up to additional regressors
-    # residuals = data - np.dot(X, betas)
-    # data_dm = data - np.mean(data)
-    # r2_ = 1 - (np.dot(residuals, residuals) / np.dot(data_dm, data_dm))
-    # scaled_prediction = np.dot(X, betas)
-    # r2 = np.corrcoef(data, scaled_prediction)[0, 1]**2
-
-    slope = np.dot(prediction,data)/len(prediction)
-    r2 = slope**2
+    #on z-score scale, beta is just the covariance of data and prediction.
+    #since correlation is normalized covariance, square of beta is r2
+    slope = jnp.dot(prediction, data) / prediction.shape[0]
+    r2 = slope ** 2
 
     #this would be the way to get intercept, but w/ z-score any deviation from zero is numerical slop
-    #intercept = np.mean(data) - slope*np.mean(prediction)
-    intercept = 0
-    # assert np.allclose(slope, betas[1])
-    # assert np.allclose(r2,r2_)
+    #so we set to zero below
+    #intercept = jnp.mean(data) - slope*jnp.mean(prediction)
 
-    #### testing z-score version CODE BLOCK
-    #A few notes:
-    # zr_bn is fastest. 
-    # lstsq doesn't work properly if design matrix isn't float64.
-    # intecept calc may not match exactly between methods to allclose precision if intercpt is basically zero
-    # zdata = st.zscore(data)
-    # zpred = st.zscore(prediction)
-    # dp_cov = np.cov(zdata,zpred,ddof=0)[0,1]
-    # zr_b = np.dot(zpred,zdata)/np.dot(zpred,zpred)
-    # zr_bn = np.dot(zpred,zdata)/len(zpred)
-    # zr_bm = np.mean(zpred*zdata)
-    # zr2 = zr_b**2
-    # zr_b0 = np.mean(zdata) - zr_b*np.mean(zpred)
+    theta = jnp.mod(jnp.arctan2(estimate[1], estimate[0]), 2 * jnp.pi)
+    rho = jnp.sqrt(estimate[0] ** 2 + estimate[1] ** 2)
+    return jnp.stack((theta, r2, rho, estimate[2], estimate[3],
+                      estimate[0], estimate[1], slope,
+                      jnp.asarray(0.0, dtype=estimate.dtype)))
 
-  
-    # X2 = np.vstack((np.ones(len(zpred)), zpred)).T
-    # zbetas, *_ = lstsq(X2, zdata, lapack_driver='gelsy')
 
-    # if not np.allclose(dp_cov,zr_b):
-    #     print('cov zr_b mismatch!')
-    # if not np.allclose(zr_b,zr_bn):
-    #     print('zr_b zr_bn mismatch!')
-    # if not np.allclose(zr_b,zr_bn):
-    #     print('zr_b zr_bm mismatch!')
-    # if not np.allclose(zr_b,zbetas[1]):
-    #     print('zr_b zbeta mismatch!')
-    # if not np.allclose(r2,zr2):
-    #     print('r2 zr2 mismatch!')
-    # if not np.allclose(zr_b0,zbetas[0]):
-    #     print('zr_b0 zbeta mismatch! %f' % (zr_b0-zbetas[0]))
-    # # if np.abs(zr_b0-zbetas[0]) > 1e-6:
-    # #     print('foo!')
-
-    theta = np.mod(np.arctan2(estimate[1], estimate[0]), 2 * np.pi)
-    rho = np.sqrt(estimate[0]**2 + estimate[1]**2)
-
-    return (theta, r2, rho, estimate[2], estimate[3],
-            estimate[0], estimate[1], slope, intercept) #betas[1], betas[0])
-
-def process_voxel(y):
+def process_voxel_jax(y,grid_preds,grid_space):
     """
     Find the best-matching grid prediction for a single voxel/vertex.
 
-    Uses fully vectorized OLS across all grid points at once:
-      - Centers the voxel timeseries
-      - Computes S_xy = G_centered @ y_centered  in one matmul  (G,)
-      - Derives OLS slope beta1 = S_xy / S_xx and SSE analytically
+    Uses fully vectorized OLS-like across all grid points at once:
+      - Computes beta = grid_preds @ y_centered / T  in one matmul 
+      - This works because beta = covariance for z-scored predictors
+      - See: https://en.wikipedia.org/wiki/Simple_linear_regression#Relationship_with_the_sample_covariance_matrix
       - Masks negative-slope fits (invalid pRF response) before argmin
     This replaces the old serial Python loop over 77k grid points.
 
-    G_centered, S_xx, and grid_space are set once per worker via the Pool
-    initializer (_worker_init), so they are NOT pickled with every task.
 
     Parameters
     ----------
@@ -151,38 +87,19 @@ def process_voxel(y):
     tuple of 9 floats
         Overload estimate for this voxel/vertex.
     """
-    G_centered = _G_centered
-    S_xx = _S_xx
-    grid_space = _grid_space
 
-    #FOR REF
-    #slope = np.dot(prediction,data)/len(prediction)
-    #r2 = slope**2
-
-    # Center the voxel timeseries
-    # y_c = y - y.mean()                     # (T,)
-    # S_yy = np.dot(y_c,y_c)               # scalar
-
-    # # Vectorized OLS across all G grid points in one matmul
-    # S_xy = G_centered @ y_c               # (G,)  — the hot path
-    # betas1 = S_xy / S_xx                  # (G,)  OLS slope
-    # sse = S_yy - betas1 * S_xy            # (G,)  SSE
-
-    betas1 = (G_centered @ y)/G_centered.shape[1]
-    #1-r**2 in liu of full sse (variance unexplained) since only differs from see by fixed scale factor per voxel)
-    vue = 1 - betas1**2 
-    #r2 = betas1**2
-    #sse = (1-r2) * np.dot(y,y)
-    
+    betas1 = (grid_preds @ y)/grid_preds.shape[1]
+    #1-r**2 in liu of full sse (variance unexplained) since only differs from see by fixed scale factor per voxel
+    vue = 1 - betas1**2
 
     # Mask invalid fits: negative slope = pRF predicts wrong sign
-    vue[betas1 < 0] = np.inf
+    vue = jnp.where(betas1 < 0, np.inf, vue)
 
-    best_grid_idx = int(np.argmin(vue))
+    best_grid_idx = jnp.argmin(vue)
     best_grid_estim = grid_space[best_grid_idx]
-    best_grid_pred = G_centered[best_grid_idx]  # centered pred is fine for OLS
+    best_grid_pred = grid_preds[best_grid_idx]
 
-    return overload_estimate(best_grid_estim, y, best_grid_pred)
+    return overload_estimate_jax(best_grid_estim, y, best_grid_pred)
 
 
 # ---------------------------------------------------------------------------
@@ -223,45 +140,18 @@ def get_grid_estims(grid_preds, grid_space, timeseries_data, gFit, indices,
     gFit : ndarray
         Updated grid fit array.
     """
-    nvoxs = len(timeseries_data)
 
-    if use_gpu:
-        try:
-            import cupy as cp
-            return _get_grid_estims_gpu(
-                grid_preds, grid_space, timeseries_data, gFit,
-                indices, batch_size
-            )
-        except ImportError:
-            print("CuPy not available. Falling back to CPU implementation.")
+    #jitted/vectorized OLS across voxels/grid points, potentially batched to avoid memory overload
+    @jax.jit(static_argnames='batch_size')
+    def process_voxels(all_data,preds,grids,batch_size):
 
-    # --- CPU path: vectorized OLS across all grid points per voxel ---
-    # Precompute centered grid stats once — injected into each worker via initializer
-    # so the ~62MB G_centered array is NOT pickled with every voxel task.
-    grid_preds = np.asarray(grid_preds, dtype=np.float32)
-    G_means = grid_preds.mean(axis=1, keepdims=True)   # (G, 1)
-    G_centered = grid_preds #- G_means                  # (G, T)
-    S_xx = (G_centered ** 2).sum(axis=1)               # (G,)
-    S_xx[S_xx == 0] = 1e-8                             # guard flat predictions
+        def process_one(data):
+            return process_voxel_jax(data,preds,grids)
+        
+        return jax.lax.map(process_one,all_data,batch_size=batch_size)
 
-    timeseries_data = np.asarray(timeseries_data, dtype=np.float32)
-
-    # Each task is just the voxel timeseries (201 floats, ~800 bytes)
-    voxel_args = [timeseries_data[iin] for iin in range(nvoxs)]
-
-    # chunksize: amortize IPC overhead across multiple voxels per round-trip
-    n_workers = cpu_count()
-    chunksize = max(1, nvoxs // (n_workers * 4))
-
-    with Pool(
-        n_workers,
-        initializer=_worker_init,
-        initargs=(G_centered, S_xx, grid_space)
-    ) as pool:
-        results = list(tqdm(
-            pool.imap(process_voxel, voxel_args, chunksize=chunksize),
-            total=nvoxs, dynamic_ncols=True
-        ))
+    results = process_voxels(jnp.asarray(timeseries_data),jnp.asarray(grid_preds),jnp.asarray(grid_space),batch_size)
+    results = jax.device_get(results)
 
     for i, result in enumerate(results):
         idx = indices[i]
@@ -271,167 +161,3 @@ def get_grid_estims(grid_preds, grid_space, timeseries_data, gFit, indices,
             gFit[idx, :] = result  # surface 1D index
 
     return gFit
-
-
-# ---------------------------------------------------------------------------
-# GPU implementations (optional, requires CuPy)
-# ---------------------------------------------------------------------------
-
-def _overload_estimate_gpu(estimate, data, prediction):
-    """GPU version of overload_estimate using CuPy."""
-    import cupy as cp
-
-    X = cp.vstack((cp.ones(len(prediction)), prediction)).T
-    XtX = cp.dot(X.T, X)
-    XtY = cp.dot(X.T, data)
-    betas = cp.linalg.solve(XtX, XtY)
-    scaled_prediction = cp.dot(X, betas)
-    r2 = cp.corrcoef(data, scaled_prediction)[0, 1]**2
-    theta = cp.mod(cp.arctan2(estimate[1], estimate[0]), 2 * cp.pi)
-    rho = cp.sqrt(estimate[0]**2 + estimate[1]**2)
-
-    return (float(theta.get()), float(r2.get()), float(rho.get()),
-            float(estimate[2]), float(estimate[3]),
-            float(estimate[0]), float(estimate[1]),
-            float(betas[1].get()), float(betas[0].get()))
-
-
-def _compute_rmse_gpu(data, predictor_series):
-    """GPU version of compute_rmse using CuPy."""
-    import cupy as cp
-
-    predictor_series = predictor_series.reshape(-1, 1)
-    X = cp.hstack((cp.ones((predictor_series.shape[0], 1)), predictor_series))
-    XtX = cp.dot(X.T, X)
-    XtX_inv = cp.linalg.inv(XtX)
-    XtX_inv_Xt = cp.dot(XtX_inv, X.T)
-    betas = cp.dot(XtX_inv_Xt, data)
-    predictions = cp.dot(X, betas)
-    rmse = cp.mean((data - predictions)**2)
-    return float(rmse.get())
-
-
-def _get_grid_estims_gpu(grid_preds, grid_space, timeseries_data, gFit,
-                         indices, batch_size=2000):
-    """
-    GPU-accelerated grid fitting with accurate dynamic memory tiling.
-
-    Two key fixes over the naive approach:
-
-    1. Memory measurement AFTER loading resident arrays.
-       Querying free memory before loading under-counts what will actually be
-       used, leading to over-sized tiles and OOM. We load X_centered, S_xx,
-       and timeseries_gpu first, flush the CuPy pool, then measure.
-
-    2. In-place inner-loop operations.
-       The formula SSE = S_yy - beta1*S_xy = S_yy - S_xy²/S_xx lets us reuse
-       the S_xy buffer throughout:
-           S_xy  = Y @ Xc.T             (allocate once)
-           mask  = S_xy < 0             (bool, 1 byte/elem)
-           S_xy² in-place               (no new alloc)
-           /S_xx in-place               (no new alloc)
-           S_yy - (S_xy²/S_xx) in-place (no new alloc)
-       Peak = 1 float32 tile + 1 bool tile = 5 bytes/elem (was 12 bytes/elem).
-    """
-    import cupy as cp
-
-    nvoxs  = len(timeseries_data)
-    ngrids = len(grid_preds)
-
-    # ── Load all resident arrays first ────────────────────────────────────────
-    timeseries_gpu = cp.asarray(timeseries_data, dtype=cp.float32)  # (N, T)
-    grid_preds_gpu = cp.asarray(grid_preds,      dtype=cp.float32)  # (G, T)
-
-    grid_means = grid_preds_gpu.mean(axis=1, keepdims=True)
-    X_centered = grid_preds_gpu - grid_means                        # (G, T)
-    S_xx       = (X_centered ** 2).sum(axis=1)                     # (G,)
-    S_xx[S_xx == 0] = 1e-8
-    del grid_preds_gpu, grid_means
-
-    # Flush freed blocks so memGetInfo reflects actual available memory
-    cp.get_default_memory_pool().free_all_blocks()
-
-    # ── Query free memory AFTER loading resident data ─────────────────────────
-    free_bytes, total_bytes = cp.cuda.runtime.memGetInfo()
-    safety_margin = 768 * 1024**2   # 768 MB headroom for CuPy intermediates
-
-    # Per-tile peak: ONLY S_xy (float32, 4 B/elem).
-    # neg_mask is eliminated — invalid fits handled by clipping, not masking.
-    # Divisor=8 (not 4) to account for CuPy matmul + in-place op intermediates.
-    max_elements = max(1, (free_bytes - safety_margin) // 8)
-
-    G_chunk = min(ngrids, max(256, int(max_elements ** 0.5)))
-    B_vox   = min(nvoxs,  max(1,   int(max_elements // G_chunk)))
-
-    print(f"GPU Grid Fit : {nvoxs:,} voxels | {ngrids:,} grid pts | "
-          f"B_vox={B_vox:,} | G_chunk={G_chunk:,} | "
-          f"free={free_bytes/1e9:.1f} GB / {total_bytes/1e9:.1f} GB")
-
-    # ── Dual-tiled fitting ────────────────────────────────────────────────────
-    pbar = tqdm(total=nvoxs, desc="GPU Grid Fit", dynamic_ncols=True)
-
-    for v_start in range(0, nvoxs, B_vox):
-        v_end      = min(v_start + B_vox, nvoxs)
-        batch_y    = timeseries_gpu[v_start:v_end]       # (B, T)  — view
-        B          = batch_y.shape[0]
-        y_mean     = batch_y.mean(axis=1, keepdims=True)
-        Y_centered = batch_y - y_mean                    # (B, T)
-        S_yy       = (Y_centered ** 2).sum(axis=1)      # (B,)
-
-        best_sse = cp.full(B, cp.inf, dtype=cp.float32)
-        best_idx = cp.zeros(B,       dtype=cp.int64)
-
-        for g_start in range(0, ngrids, G_chunk):
-            g_end     = min(g_start + G_chunk, ngrids)
-            Xc_chunk  = X_centered[g_start:g_end]        # (Gc, T) — view
-            Sxx_chunk = S_xx[g_start:g_end]              # (Gc,)  — view
-
-            # ── Step 1: S_xy = Y_centered @ Xc.T  (B, Gc) — ONE allocation ──
-            S_xy = Y_centered @ Xc_chunk.T
-
-            # ── Steps 2–5: in-place → reuse S_xy buffer ──────────────────────
-            # SSE = S_yy - S_xy² / S_xx  (equiv. to S_yy - beta1·S_xy)
-            #
-            # Invalid fits: clip S_xy to 0 BEFORE squaring.
-            # Beta1 < 0 ↔ S_xy < 0.  Clipping → S_xy²=0 → SSE=S_yy.
-            # Since SSE_valid = S_yy - positive < S_yy, argmin always
-            # prefers valid fits over clipped ones — no masking needed.
-            # This eliminates neg_mask (1.73 GB) AND the hidden CuPy prefix
-            # scan that S_xy[bool_mask] triggers (~6.9 GB at this tile size).
-            cp.maximum(S_xy, cp.float32(0.0), out=S_xy)             # clip ≥ 0
-            cp.multiply(S_xy, S_xy, out=S_xy)                        # S_xy²
-            cp.divide(S_xy, Sxx_chunk[cp.newaxis, :], out=S_xy)     # S_xy²/S_xx
-            cp.subtract(S_yy[:, None], S_xy, out=S_xy)              # SSE
-
-            # ── Running argmin ────────────────────────────────────────────────
-            chunk_min_sse = S_xy.min(axis=1)
-            chunk_min_idx = S_xy.argmin(axis=1)
-            improved  = chunk_min_sse < best_sse
-            best_sse  = cp.where(improved, chunk_min_sse, best_sse)
-            best_idx  = cp.where(improved, chunk_min_idx + g_start, best_idx)
-
-            del S_xy, chunk_min_sse, chunk_min_idx, improved
-
-        # ── Overload estimates (CPU loop, small) ──────────────────────────────
-        best_idx_cpu = cp.asnumpy(best_idx)
-        for i in range(B):
-            b_idx  = int(best_idx_cpu[i])
-            result = _overload_estimate_gpu(
-                grid_space[b_idx],
-                batch_y[i],
-                X_centered[b_idx],    # centered pred; overload re-fits OLS
-            )
-            idx = indices[v_start + i]
-            if isinstance(idx, (list, tuple)):
-                gFit[idx[0], idx[1], idx[2], :] = result
-            else:
-                gFit[idx, :] = result
-
-        del Y_centered, best_sse, best_idx
-        pbar.update(B)
-
-    pbar.close()
-    del timeseries_gpu, X_centered, S_xx
-    cp.get_default_memory_pool().free_all_blocks()
-    return gFit
-
