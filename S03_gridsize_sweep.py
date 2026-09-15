@@ -41,12 +41,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 from popeye.visual_stimulus import VisualStimulus
 
-from H01_config import DEFAULT_PARAMS, GRID_DEFAULTS, set_paths, get_gridfit_path
-from H02_dataloader import load_stimuli
-from H03_fit_utils import print_time, remove_trend, constrain_grids, set_dark_theme
-from H04_grid_predict import getGridPreds
-from H05_grid_fit import get_grid_estims
-from H06_final_fit import get_final_estims
+from config import DEFAULT_PARAMS, GRID_DEFAULTS, set_paths
+from sweepea.dataloader import load_stimuli, get_gridfit_path
+from sweepea.fit_utils import print_time, remove_trend, constrain_grids, set_dark_theme
+from sweepea.grid_predict import getGridPreds
+from sweepea.grid_fit import get_grid_estims
+from sweepea.final_fit import get_final_estims
+import sweepea.utilities as utils
 from D01_analyze_snr import compute_tfsp
 
 # Reuse S02's simulation loader and tee logger to avoid duplication.
@@ -228,7 +229,7 @@ def r2_by_bin(r2_vals, bin_labels, n_bins):
     return out
 
 
-def prepare_gridpreds(Ns, stimulus, p, nTRs):
+def prepare_gridpreds(Ns, stimulus, p, nTRs, hrf):
     """CPU stage: build the grid space and load-or-generate its grid predictions.
 
     This is the only compute-heavy CPU step (`getGridPreds` uses a process Pool)
@@ -240,13 +241,14 @@ def prepare_gridpreds(Ns, stimulus, p, nTRs):
     print(f'[Ns={Ns}] Grid space: {len(grid_space)} points '
           f'(n-grid resolution = {len(N_GRID_VALUES)})')
 
-    gridfit_path = get_gridfit_path(p, Ns, n_res=len(N_GRID_VALUES))
+    gridfit_path = get_gridfit_path(p, grid_space, stimulus.params, hrf,
+                                     Ns=Ns, n_res=len(N_GRID_VALUES))
     if os.path.exists(gridfit_path):
         print(f'[Ns={Ns}] Loading grid predictions from disk ({gridfit_path})')
         grid_preds = np.load(gridfit_path)
     else:
         print(f'[Ns={Ns}] Generating grid predictions ({gridfit_path})...')
-        grid_preds = getGridPreds(grid_space, stimulus, gridfit_path, nTRs)
+        grid_preds = getGridPreds(grid_space, stimulus, hrf, gridfit_path)
     prep_time = time.perf_counter() - t0
     print_time(t0, time.perf_counter(), f'[Ns={Ns}] Grid predictions')
     return grid_space, param_width, grid_preds, prep_time
@@ -743,6 +745,7 @@ def _run(args, codeStartTime, p, params):
         float(func_img.header['pixdim'][4]),
         params['dtype'],
     )
+    hrf = utils.double_gamma_hrf(0, float(func_img.header['pixdim'][4]))
 
     # TFSP (SNR) per voxel, computed once from the detrended data (independent of
     # Ns). Colors the recovery-scatter points and defines the SNR bins used by the
@@ -777,7 +780,7 @@ def _run(args, codeStartTime, p, params):
         results = []
 
         def _prep(Ns):
-            return prepare_gridpreds(Ns, stimulus, p, nTRs)
+            return prepare_gridpreds(Ns, stimulus, p, nTRs, hrf)
 
         if args.no_prefetch or len(grid_sizes) <= 1:
             for Ns in grid_sizes:

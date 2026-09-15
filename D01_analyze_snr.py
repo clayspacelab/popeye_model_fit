@@ -88,9 +88,9 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from scipy import stats
 
-from H01_config import DEFAULT_PARAMS, GRID_DEFAULTS, set_paths
-from H02_dataloader import load_surface_data
-from H03_fit_utils import remove_trend, set_dark_theme
+from config import DEFAULT_PARAMS, GRID_DEFAULTS, set_paths
+from sweepea.dataloader import load_surface_data
+from sweepea.fit_utils import preprocess_signal, set_dark_theme
 
 
 # ─── Defaults ─────────────────────────────────────────────────────────────────
@@ -247,8 +247,8 @@ def run_subject_mode(args):
         tr = tr_length
 
     print("Detrending...")
-    leftDet  = remove_trend(leftDataOrig,  method='all')
-    rightDet = remove_trend(rightDataOrig, method='all')
+    leftDet  = preprocess_signal(leftDataOrig, detrend_method='detrend_vista')
+    rightDet = preprocess_signal(rightDataOrig, detrend_method='detrend_vista')
 
     hemispheres = {
         'left':  (leftDataOrig,  leftDet),

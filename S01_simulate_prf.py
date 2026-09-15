@@ -30,14 +30,7 @@ from scipy.io import savemat
 from scipy.stats import zscore
 from itertools import product
 
-import sweepea.utilities as utils
-from sweepea.visual_stimulus import VisualStimulus
-
-from H01_config import DEFAULT_PARAMS, GRID_DEFAULTS, set_paths
-from H02_dataloader import load_stimuli
-from H03_fit_utils import constrain_grids, set_dark_theme
-from H04_grid_predict import generate_grid_prediction
-
+from config import DEFAULT_PARAMS, GRID_DEFAULTS, set_paths
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Generate synthetic pRF data')
@@ -45,103 +38,24 @@ def parse_args():
                         help='Number of simulated voxels (default: 100000)')
     parser.add_argument('--grid-density', type=int, default=GRID_DEFAULTS['Ns'],
                         help=f'Grid density for parameter sampling (default: {GRID_DEFAULTS["Ns"]})')
-    parser.add_argument('--use-gpu', action='store_true',
-                        help='Use GPU (CuPy) for batch prediction generation')
+    parser.add_argument('--force-cpu', action='store_true',
+                        help='Force CPU usage for batch prediction generation')
     return parser.parse_args()
 
+args = parse_args()
+
+from sweepea import jax_config
+jax_backend = jax_config.configure_jax(force_cpu=args.force_cpu)
+
+import sweepea.utilities as utils
+from sweepea.visual_stimulus import VisualStimulus
+from sweepea.dataloader import load_stimuli
+from sweepea.fit_utils import constrain_grids, set_dark_theme
+from sweepea.grid_predict import getGridPreds
 
 
-def _generate_predictions_gpu(params_vox, stimulus, hrf, sub_batch=5000):
-    """
-    Generate CSS pRF predictions for all voxels using GPU batch computation.
+def main(args,jax_backend):
 
-    All N voxels' forward models are computed simultaneously per sub-batch:
-        Batch RF:    (N, H*W) computed at once (vectorized Gaussian)
-        Response:    (N, H*W) @ (H*W, T) → (N, T)  one GPU matmul
-        CSS:         (N, T) ** n  vectorized
-        HRF conv:    batch FFT on (N, nfft)
-
-    Parameters
-    ----------
-    params_vox : list of (x, y, sigma, n) tuples
-    stimulus   : VisualStimulus
-    hrf        : ndarray
-        HRF to convolve with the neural response.
-    sub_batch  : int   voxels per GPU sub-batch (default 5000)
-
-    Returns
-    -------
-    ndarray, shape (N, T)
-    """
-    try:
-        import cupy as cp
-    except ImportError:
-        raise RuntimeError("CuPy is required for GPU prediction generation. "
-                           "Install with: pip install cupy-cuda12x")
-
-    import sweepea.utilities as utils_mod
-
-    nT     = stimulus.run_length #stimulus.stim_arr.shape[2]
-    N      = len(params_vox)
-
-    # Transfer stimulus to GPU once
-    deg_x_flat = cp.asarray(stimulus.deg_x.ravel(), dtype=cp.float32)   # (H*W,)
-    deg_y_flat = cp.asarray(stimulus.deg_y.ravel(), dtype=cp.float32)
-    # stim_flat  = cp.asarray(stimulus.stim_arr.reshape(-1, nT),
-    #                         dtype=cp.float32)                             # (H*W, T)
-    stim_flat  = cp.asarray(stimulus.stim_arr.T,
-                            dtype=cp.float32)                             # (H*W, T)
-    hrf_cpu    = hrf.astype(np.float32) #should already be float32, but just in case
-    hrf_gpu    = cp.asarray(hrf_cpu)
-    #dx         = float(cp.diff(cp.asarray(stimulus.deg_x[0, 0:2]))[0])
-
-    nfft    = nT + len(hrf_cpu) - 1
-    hrf_fft = cp.fft.rfft(hrf_gpu, n=nfft)                              # (nfft//2+1,)
-
-    params_arr = np.array(params_vox, dtype=np.float32)                  # (N, 4)
-    results    = np.empty((N, nT), dtype=np.float32)
-
-    for start in tqdm(range(0, N, sub_batch), desc="GPU voxel prediction"):
-        end  = min(start + sub_batch, N)
-        batch = cp.asarray(params_arr[start:end])                         # (B, 4)
-        B    = batch.shape[0]
-
-        x     = batch[:, 0]   # (B,)
-        y     = batch[:, 1]
-        sigma = batch[:, 2]
-        n     = batch[:, 3]
-
-        # Batch 2D Gaussian RF: (B, H*W)
-        dx_diff = deg_x_flat[None, :] - x[:, None]
-        dy_diff = deg_y_flat[None, :] - y[:, None]
-        rf      = cp.exp(-(dx_diff**2 + dy_diff**2) / (2.0 * sigma[:, None]**2))
-        #rf     /= (2.0 * np.pi * sigma[:, None]**2) / (dx**2)
-
-        # Neural response: (B, H*W) @ (H*W, T) → (B, T)
-        response = rf @ stim_flat
-
-        # CSS compressive nonlinearity
-        response = response ** n[:, None]
-
-        # Batch HRF convolution via FFT
-        R_fft = cp.fft.rfft(response, n=nfft)
-        pred  = cp.fft.irfft(R_fft * hrf_fft[None, :])[:, :nT]
-
-        # Normalize to percent signal change
-        # mu   = pred.mean(axis=1, keepdims=True)
-        # pred = (pred - mu) / (cp.abs(mu) + 1e-8)
-
-        results[start:end] = cp.asnumpy(pred)
-
-    # Free GPU memory
-    del deg_x_flat, deg_y_flat, stim_flat, hrf_gpu, hrf_fft
-    cp.get_default_memory_pool().free_all_blocks()
-
-    return results
-
-
-def main():
-    args = parse_args()
 
     # Use a dummy subject to get paths (stimulus is shared)
     params = dict(DEFAULT_PARAMS)
@@ -164,6 +78,8 @@ def main():
     )
 
     # Build parameter space
+    # Currently have code to generate grids more easily, but for now sticking w/ legacy code
+    # For consistency w/ older simulations/fitting. Might change that very soon tho.
     Ns = args.grid_density
     x_space = np.concatenate((
         np.linspace(-stimulus.deg_x.max(), stimulus.deg_x.max(), Ns // 2),
@@ -186,30 +102,21 @@ def main():
 
     # Sample random voxels
     nvoxs = args.n_voxels
-    params_vox = random.sample(params_space, min(nvoxs, len(params_space)))
+    params_vox = random.sample(params_space.tolist(), min(nvoxs, len(params_space)))
     baseline_vox = np.random.uniform(0, 10000, len(params_vox))
 
     # Generate predictions — CPU multiprocessing or GPU batch
     print(f"Generating predictions for {len(params_vox)} simulated voxels "
-          f"({'GPU' if args.use_gpu else 'CPU'})...")
+          f"using {jax_backend.upper()}...") #f"({'GPU' if args.use_gpu else 'CPU'})...")
 
     # generate hrf
     hrf = utils.double_gamma_hrf(0, params['tr_length'])
 
-    if args.use_gpu:
-        results = _generate_predictions_gpu(params_vox, stimulus.params, hrf)
-    else:
-        from multiprocessing import Pool, cpu_count
-        with Pool(cpu_count()) as pool:
-            results = pool.map(
-                generate_grid_prediction,
-                [(x, y, s, n, stimulus.params, hrf) for x, y, s, n in params_vox]
-            )
-        results = np.array(results)
-
+    results = getGridPreds(params_vox, stimulus.params, hrf)
+   
     # Add noise + linear trend + baseline
     noise_levels = np.random.uniform(0.1, 2.5, results.shape)
-    results = (zscore(results, axis=-1, ddof=1)
+    results = (zscore(results, axis=-1, ddof=0)
                + np.random.normal(0, noise_levels, results.shape)
                + np.linspace(0, 1, results.shape[-1])[None, :]
                + baseline_vox[:, None])
@@ -306,4 +213,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    main(args, jax_backend)

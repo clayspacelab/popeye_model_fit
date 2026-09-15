@@ -21,25 +21,46 @@ import pickle
 import traceback
 from datetime import datetime
 from copy import deepcopy
+from scipy import stats
 
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import nibabel as nib
 
-from itertools import product
+from config import DEFAULT_PARAMS, GRID_DEFAULTS, GRID_PARAMS
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description='Run pRF fitting on simulated data and evaluate accuracy'
+    )
+    parser.add_argument('--n-voxels', type=int, default=None,
+                        help='Number of voxels to test (default: all simulated voxels)')
+    parser.add_argument('--grid-size', type=int, default=GRID_DEFAULTS['Ns'],
+                        help=f'Grid density Ns (default: {GRID_DEFAULTS["Ns"]})')
+    parser.add_argument('--force-cpu', action='store_true',
+                        help='Force JAX to use the CPU even if a GPU is available')
+    parser.add_argument('--skip-final-fit', action='store_true',
+                        help='Skip the final fit step')
+    parser.add_argument('--skip-grid-fit', action='store_true',
+                    help='Skip the grid fit step and load previous prediction')
+    return parser.parse_args()
+
+
+args = parse_args()
+
+from sweepea import jax_config
+
+jax_backend = jax_config.configure_jax(force_cpu=args.force_cpu)
+
+#JAX-dependent imports must come after the backend is configured
 import sweepea.utilities as utils
 from sweepea.visual_stimulus import VisualStimulus
-
-from H01_config import DEFAULT_PARAMS, GRID_DEFAULTS, set_paths, get_gridfit_path, GRID_PARAMS
-from H02_dataloader import load_stimuli, save2nifti
-from H03_fit_utils import print_time, remove_trend, constrain_grids, set_dark_theme, generate_grids,_set_param_minmax,_set_param_gridN
-from H04_grid_predict import getGridPreds
-from H05_grid_fit import get_grid_estims
-from H06_final_fit import get_final_estims
-from scipy import stats
+from sweepea.dataloader import load_stimuli, set_paths, get_gridfit_path
+from sweepea.fit_utils import print_time, preprocess_signal, constrain_grids, set_dark_theme, generate_grids,_set_param_minmax,_set_param_gridN
+from sweepea.grid_predict import getGridPreds
+from sweepea.grid_fit import get_grid_estims
+from sweepea.final_fit import get_final_estims
 from D01_analyze_snr import compute_tfsp
 
 
@@ -73,21 +94,7 @@ class TeeLogger:
         self._log.close()
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description='Run pRF fitting on simulated data and evaluate accuracy'
-    )
-    parser.add_argument('--n-voxels', type=int, default=None,
-                        help='Number of voxels to test (default: all simulated voxels)')
-    parser.add_argument('--grid-size', type=int, default=GRID_DEFAULTS['Ns'],
-                        help=f'Grid density Ns (default: {GRID_DEFAULTS["Ns"]})')
-    parser.add_argument('--use-gpu', action='store_true',
-                        help='Enable GPU acceleration')
-    parser.add_argument('--skip-final-fit', action='store_true',
-                        help='Skip the final fit step')
-    parser.add_argument('--skip-grid-fit', action='store_true',
-                    help='Skip the grid fit step and load previous prediction')
-    return parser.parse_args()
+
 
 
 def load_simulation_data(p, nvox):
@@ -227,8 +234,7 @@ def plot_tfsp_binned_voxels(timeseries, tfsp, save_path, n_bins=5, n_cols=4):
     print(f'TFSP-binned voxels plot saved to {save_path}')
 
 
-def main():
-    args = parse_args()
+def main(args,jax_backend):
     codeStartTime = time.perf_counter()
 
     # Resolve paths first so log lands next to simulation results
@@ -268,11 +274,12 @@ def _run(args, codeStartTime, p, params):
     print(f'Run started: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
     print(f'N voxels:  {nvoxs}')
     print(f'Grid size: {args.grid_size}')
-    print(f'GPU:       {"enabled" if args.use_gpu else "disabled"}')
+    print(f'JAX backend: {jax_backend.upper()}')
     print()
 
     # Detrend
-    scan_data = remove_trend(scan_data, method='all')
+    #scan_data = remove_trend(scan_data, method='all')
+    scan_data = preprocess_signal(scan_data, detrend_method='detrend')
 
     # TFSP (SNR) per voxel from the detrended data — used to bin the example
     # voxels below and, later, to color the fit-comparison plots.
@@ -288,7 +295,7 @@ def _run(args, codeStartTime, p, params):
 
     # Set up for volumetric-style fitting (1x1xN pseudo-volume)
     timeseries_data = scan_data
-    timeseries_data = stats.zscore(timeseries_data,axis=-1) #should build into remove_trend, but still testsing!
+    #timeseries_data = stats.zscore(timeseries_data,axis=-1) #should build into remove_trend, but still testsing!
     # fig,ax=plt.subplots(nrows=2,ncols=1)
     # ax[0].plot(timeseries_data[0,:])
     # ax[1].plot(scan_data[0,:])
@@ -297,9 +304,9 @@ def _run(args, codeStartTime, p, params):
     print(f"Running model-fit on {nvoxs} voxels")
 
     # Load stimulus
-    bar, _ = load_stimuli(p)
+    bar = load_stimuli(p)
     bar = bar[:, :, 0:201]
-    bar = np.flip(bar, axis=0)
+    #bar = np.flip(bar, axis=0) (now done by default in load_stimuli)
 
     # Load NIfTI for affine/header (needed for saving)
     #func_img = nib.load(p['pRF_ss5'])
@@ -326,43 +333,22 @@ def _run(args, codeStartTime, p, params):
     grid_space = generate_grids(grid_params,constrain_grids,stimulus)
 
 
-    # x_grid = np.concatenate((
-    #     np.linspace(-stimulus.deg_x.max(), stimulus.deg_x.max(), Ns // 2),
-    #     np.geomspace(-stimulus.deg_x.max(), -2 * stimulus.deg_x.max(), Ns // 4),
-    #     np.geomspace(stimulus.deg_x.max(), 2 * stimulus.deg_x.max(), Ns // 4),
-    # ))
-    # y_grid = np.concatenate((
-    #     np.linspace(-stimulus.deg_y.max(), stimulus.deg_y.max(), Ns // 2),
-    #     np.geomspace(-stimulus.deg_y.max(), -2 * stimulus.deg_y.max(), Ns // 4),
-    #     np.geomspace(stimulus.deg_y.max(), 2 * stimulus.deg_y.max(), Ns // 4),
-    # ))
-    # s_grid = np.concatenate((
-    #     np.linspace(0.1, 5, 3 * Ns // 4),
-    #     np.geomspace(5, stimulus.deg_x.max(), Ns // 4),
-    # ))
-
-    # Use the finer 10-value CSS-exponent grid (shared with S03) — the exponent
-    # is the parameter most sensitive to grid resolution.
-    # n_grid = np.asarray(GRID_DEFAULTS['n_grid_values_fine'])
-    # grid_space_orig = list(product(x_grid, y_grid, s_grid, n_grid))
-    # grid_space = constrain_grids(grid_space_orig, stimulus)
     print(f'Grid space: {len(grid_space)} points '
           f'(n-grid resolution = {grid_params['n']['num']})')
 
-    # param_width = [np.mean(np.diff(x_grid)), np.mean(np.diff(y_grid)),
-    #                np.mean(np.diff(s_grid)), np.mean(np.diff(n_grid))]
 
     # Grid predictions
     tstamp_start = time.perf_counter()
-    gridfit_path = get_gridfit_path(p, Ns, n_res=grid_params['n']['num'])
-    hrf = utils.double_gamma_hrf(0, params['tr_length']) 
+    hrf = utils.double_gamma_hrf(0, params['tr_length'])
+    gridfit_path = get_gridfit_path(p, grid_space, stimulus.params, hrf,
+                                     Ns=Ns, n_res=grid_params['n']['num'])
     if os.path.exists(gridfit_path):
         print(f"Loading grid predictions from disk ({gridfit_path})")
         grid_preds = np.load(gridfit_path)
     else:
         print(f"Generating grid predictions ({gridfit_path})...")
-        grid_preds = getGridPreds(grid_space, stimulus.params, gridfit_path,
-                                  timeseries_data.shape[1],hrf)
+        grid_preds = getGridPreds(grid_space, stimulus.params, 
+                                  hrf, gridfit_path)
     tstamp_gridpred = time.perf_counter()
     print_time(tstamp_start, tstamp_gridpred, 'Grid predictions')
 
@@ -370,9 +356,9 @@ def _run(args, codeStartTime, p, params):
     sim_fit_dir = os.path.join(p['pRF_data'], 'Simulation', 'popeyeFit')
     if not args.skip_grid_fit:
         print('Starting grid fit...')
-        RF_ss5_gFit = np.empty((1, 1, nvoxs, 9))
+        RF_ss5_gFit = np.zeros((1, 1, nvoxs, 9),dtype=np.float32)
         RF_ss5_gFit = get_grid_estims(grid_preds, grid_space, timeseries_data,
-                                    RF_ss5_gFit, indices, use_gpu=args.use_gpu)
+                                    RF_ss5_gFit, indices)
         tstamp_gridfit = time.perf_counter()
         print_time(tstamp_gridpred, tstamp_gridfit, 'Grid fit')
 
@@ -395,10 +381,9 @@ def _run(args, codeStartTime, p, params):
         if args.skip_grid_fit:
             RF_ss5_gFit = np.load(os.path.join(sim_fit_dir,f'RF_ss5_gFit_popeye_Ns{Ns}.npy'))
             RF_ss5_gFit = RF_ss5_gFit[np.newaxis,np.newaxis,:,:] 
-        RF_ss5_fFit = np.empty((1, 1, nvoxs, 9))
+        RF_ss5_fFit = np.zeros((1, 1, nvoxs, 9),dtype=np.float32)
         RF_ss5_fFit = get_final_estims(RF_ss5_gFit, timeseries_data,
-                                        stimulus.params, hrf, RF_ss5_fFit, indices,
-                                        use_gpu=args.use_gpu)
+                                        stimulus.params, hrf, RF_ss5_fFit, indices)
         RF_ss5_fFit = RF_ss5_fFit.reshape(1, 1, nvoxs, 9)  # restore 4D shape
         tstamp_finalfit = time.perf_counter()
         if args.skip_grid_fit:
@@ -420,4 +405,4 @@ def _run(args, codeStartTime, p, params):
 
 
 if __name__ == '__main__':
-    main()
+    main(args, jax_backend)
