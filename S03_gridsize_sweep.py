@@ -41,9 +41,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 from popeye.visual_stimulus import VisualStimulus
 
-from config import DEFAULT_PARAMS, GRID_DEFAULTS, set_paths
+from config import STIMULUS_PARAMS, GRID_PARAMS, set_paths
 from sweepea.dataloader import load_stimuli, get_gridfit_path
-from sweepea.fit_utils import print_time, remove_trend, constrain_grids, set_dark_theme
+from sweepea.utils import print_time, remove_trend, constrain_grids, set_dark_theme
 from sweepea.grid_predict import getGridPreds
 from sweepea.grid_fit import get_grid_estims
 from sweepea.final_fit import get_final_estims
@@ -56,7 +56,7 @@ from S02_run_simulation_fit import TeeLogger, load_simulation_data
 
 # Finer CSS exponent grid for the sweep (10 values vs the coarse 4). Shared with
 # S02 via H01_config so both build the same grid and reuse the same cache file.
-N_GRID_VALUES = GRID_DEFAULTS['n_grid_values_fine']
+N_GRID_VALUES = GRID_PARAMS['n_grid_values_fine']
 
 # TFSP task-band period (seconds); matches S02. TFSP (SNR) colors the
 # recovery-scatter points and defines the SNR bins for the per-bin accuracy plot.
@@ -679,7 +679,7 @@ def main():
     args = parse_args()
     codeStartTime = time.perf_counter()
 
-    params = dict(DEFAULT_PARAMS)
+    params = dict(STIMULUS_PARAMS)
     params['subjID'] = 'JC'
     p, _ = set_paths(params['subjID'], data_format='volumetric')
 
@@ -739,11 +739,11 @@ def _run(args, codeStartTime, p, params):
     func_img = nib.load(p['pRF_ss5'])
     stimulus = VisualStimulus(
         bar.astype('int16'),
-        params['viewingDistance'],
-        params['screenWidth'],
-        params['scaleFactor'],
         float(func_img.header['pixdim'][4]),
-        params['dtype'],
+        params['viewingDistance'],
+        params['stimWidth'],
+        #params['scaleFactor'],
+        #params['dtype'],
     )
     hrf = utils.double_gamma_hrf(0, float(func_img.header['pixdim'][4]))
 

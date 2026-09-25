@@ -12,14 +12,15 @@ Contains:
 
 import warnings
 import numpy as np
-import jax.numpy as jnp
-#from jax.experimental import checkify
 import matplotlib.pyplot as plt
 from itertools import product
 from scipy.signal import detrend
-from scipy.stats import zscore
+from scipy.stats import zscore,gamma
+from scipy.integrate import trapezoid
 from scipy.linalg import lstsq
 
+
+### MISC ####
 
 def set_dark_theme():
     """
@@ -58,6 +59,21 @@ def print_time(st_time, end_time, process_name):
               f'{round((duration%3600)//60)} minutes '
               f'and {round(duration%60)} seconds')
 
+
+#helper function to convert a 2D set of fit results from grid or final fit into
+#a volume or surface with indices matched to source voxels/vertices.
+def results_to_img(fit_img,results,indices):
+
+    indices = np.asarray(indices)
+    if indices.ndim == 2:
+        fit_img[indices[:, 0], indices[:, 1], indices[:, 2], :] = results  # volumetric 3D index
+    else:
+        fit_img[indices, :] = results  # surface 1D index
+
+    return fit_img
+
+
+### BOLD PREPROCESSING ###
 
 def make_trends(n_frames, n_dct, verbose=False):
     """
@@ -172,6 +188,9 @@ def preprocess_signal(signal, detrend_method, **kwargs):
     signal_normalized = zscore(signal_detrend, axis=-1)
 
     return signal_normalized
+
+
+### GRID CREATION ###
 
 #adapted from vista rmSpaceSigmas.m
 def linlogspace(start, stop, num, border, pctlin, reflect=False):
@@ -333,114 +352,171 @@ def generate_bounds(init_estim, param_width):
     return (x_bounds, y_bounds, sigma_bounds, n_bounds)
 
 
-def error_func_lsq(parameters, data, objective_function):
-    """
-    Error function for a least squares solver (full residual vector)
+### HRF models ###
+
+def double_gamma_hrf(delay, tr, fptr=1.0, integrator=trapezoid,dtype='float32'):
+
+    r"""The double gamma hemodynamic reponse function (HRF).
+    The user specifies only the delay of the peak and undershoot.
+    The delay shifts the peak and undershoot by a variable number of
+    seconds. The other parameters are hardcoded. The HRF delay is
+    modeled for each voxel independently. The form of the HRF and the
+    hardcoded values are based on previous work [1]_.
 
     Parameters
     ----------
-    parameters : array-like
-        Current (x, y, sigma, n) values.
-    data : ndarray
-        Observed timeseries.
-    objective_function : callable
-        Function that generates predicted timeseries from parameters.
+    delay : float
+        The delay of the HRF peak and undershoot.
+
+    tr : float
+        The length of the repetition time in seconds.
+
+    fptr : float
+        The number of stimulus frames per reptition time.  For a
+        60 Hz projector and with a 1 s repetition time, the fptr
+        would be equal to 60.  It is possible that you will bin all
+        the frames in a single TR, in which case fptr equals 1.
+
+    integrator : callable
+        The integration function for normalizing the units of the HRF
+        so that the area under the curve is the same for differently
+        delayed HRFs.  Set integrator to None to turn off normalization.
 
     Returns
     -------
-    float
-        vector of residuals.
+    hrf : ndarray
+        The hemodynamic response function to convolve with the stimulus
+        timeseries.
+
+    Reference
+    ----------
+    .. [1] Glover, GH (1999) Deconvolution of impulse response in event related
+    BOLD fMRI. NeuroImage 9, 416-429.
+
     """
+    from scipy.special import gamma
+    
+    # add delay to the peak and undershoot params (alpha 1 and 2)
+    alpha_1 = float(5 + delay)
+    beta_1 = 1.0
+    c = 0.1
+    alpha_2 = float(15 + delay)
+    beta_2 = 1.0
+    
+    t = np.arange(0,32,tr)
+    
+    hrf = ( ( ( t ** (alpha_1) * beta_1 ** alpha_1 * np.exp( -beta_1 * t )) /gamma( alpha_1 )) - c *
+            ( ( t ** (alpha_2) * beta_2 ** alpha_2 * np.exp( -beta_2 * t )) /gamma( alpha_2 )) )
+            
+    if integrator: # pragma: no cover
+        hrf /= integrator(hrf)
+        
+    return hrf.astype(dtype)
 
-    prediction = objective_function(parameters)
-
-    #checkify.check(prediction.ndim==1, "foo!")
-
-    #assert not np.any(np.isnan(prediction)), "%s" % parameters
-
-    slope = jnp.dot(prediction, data) / prediction.shape[0]
-
-    #penalty = jnp.minimum(0,jnp.sum(parameters[0:2]**2)-25**2)*100
-
-    error = data - slope*prediction
-    #error = jnp.append(data - slope*prediction,penalty)
-
-    return error
-
-def error_func_lsq_np(parameters, data, objective_function):
+def _gamma_difference_hrf(tr, oversampling=1, time_length=32., onset=0.,
+                         delay=5, undershoot=15., dispersion=1.,
+                         u_dispersion=1., ratio=0.167):
+    """ Compute an hrf as the difference of two gamma functions
+    Parameters
+    ----------
+    tr: float, scan repeat time, in seconds
+    oversampling: int, temporal oversampling factor, optional
+    time_length: float, hrf kernel length, in seconds
+    onset: float, onset of the hrf
+    Returns
+    -------
+    hrf: array of shape(length / tr * oversampling, float),
+         hrf sampling on the oversampled time grid
     """
-    Error function for scipy.optimize.least_squares.
+    dt = tr / oversampling
+    time_stamps = np.linspace(0, time_length, int(float(time_length) / dt))
+    time_stamps -= onset / dt
+    hrf = gamma.pdf(time_stamps, delay / dispersion, dt / dispersion) - \
+        ratio * gamma.pdf(
+        time_stamps, undershoot / u_dispersion, dt / u_dispersion)
+    hrf /= trapezoid(hrf)
+    return hrf
+
+def spm_hrf(delay, tr, oversampling=1, time_length=32., onset=0.):
+    """ Implementation of the SPM hrf model
+    Parameters
+    ----------
+    tr: float, scan repeat time, in seconds
+    oversampling: int, temporal oversampling factor, optional
+    time_length: float, hrf kernel length, in seconds
+    onset: float, onset of the response
+    Returns
+    -------
+    hrf: array of shape(length / tr * oversampling, float),
+         hrf sampling on the oversampled time grid
+    """
+    return _gamma_difference_hrf(tr, oversampling, time_length, onset, delay=5+delay, undershoot=15+delay,)
+
+
+def glover_hrf(delay, tr, oversampling=1, time_length=32., onset=0.):
+    """ Implementation of the Glover hrf model
+    Parameters
+    ----------
+    tr: float, scan repeat time, in seconds
+    oversampling: int, temporal oversampling factor, optional
+    time_length: float, hrf kernel length, in seconds
+    onset: float, onset of the response
+    Returns
+    -------
+    hrf: array of shape(length / tr * oversampling, float),
+         hrf sampling on the oversampled time grid
+    """
+    return _gamma_difference_hrf(tr, oversampling, time_length, onset,
+                                delay=5+delay, undershoot=15+delay, dispersion=.9,
+                                u_dispersion=.9, ratio=.35)
+
+
+def hrf_two_gammas(tr, params=None, integrator=trapezoid, dtype='float32'):
+    r"""SPM-style two-gamma HRF, as in Glover, NeuroImage 9:416-429.
+
+    Ported/adapted from vistasoft's ``rmHrfTwogammas.m``.
 
     Parameters
     ----------
-    parameters : array-like
-        Current (x, y, sigma, n) values.
-    data : ndarray
-        Observed timeseries.
-    objective_function : callable
-        Function that generates predicted timeseries from parameters.
+    tr : float
+        The length of the repetition time in seconds.
+
+    params : sequence of 5 floats, optional
+        (peak1, fwhm1, peak2, fwhm2, dip). Defaults to
+        (5.4, 5.2, 10.8, 7.35, 0.35).
 
     Returns
     -------
-    float
-        vector of residuals.
+    h : ndarray
+        h = gamma1 - dip * gamma2, unnormalized (matching the original,
+        which leaves its own `h./sum(h)` normalization commented out).
     """
+    t = np.arange(0,32,tr)
 
-    prediction = objective_function(parameters)
+    if params is None:
+        params = (5.4, 5.2, 10.8, 7.35, 0.35)
+    peak1, fwhm1, peak2, fwhm2, dip = params
 
-    #assert not np.any(np.isnan(prediction)), "%s" % parameters
+    if peak1 == 0 or fwhm1 == 0:
+        raise ValueError(f"rm_hrf_two_gammas: zero params: {params}")
 
-    slope = np.dot(prediction,data)/len(prediction)
+    alpha1 = peak1 ** 2 / fwhm1 ** 2 * 8 * np.log(2)
+    beta1 = fwhm1 ** 2 / peak1 / 8 / np.log(2)
+    gamma1 = (t / peak1) ** alpha1 * np.exp(-(t - peak1) / beta1)
 
-    error = data - slope*prediction
-
-    return error
-
-
-def error_func_min(parameters, data, objective_function):
-    """
-    Error function for general minimization objective (sum squared errors)
-
-    Parameters
-    ----------
-    parameters : array-like
-        Current (x, y, sigma, n) values.
-    data : ndarray
-        Observed timeseries.
-    objective_function : callable
-        Function that generates predicted timeseries from parameters.
-
-    Returns
-    -------
-    float
-        0.5 * sum(f_i(x)**2)
-    """
-
-    prediction = objective_function(parameters)
-
-    #checkify.check(prediction.ndim==1, "foo!")
-
-    #assert not np.any(np.isnan(prediction)), "%s" % parameters
-
-    slope = jnp.dot(prediction, data) / prediction.shape[0]
-
-    #penalty = jnp.minimum(0,jnp.sum(parameters[0:2]**2)-25**2)*100
-
-    error = data - slope*prediction
-    #error = jnp.append(data - slope*prediction,penalty)
-
-    return 0.5 * jnp.dot(error,error)
-
-
-#helper function to convert a 2D set of fit results from grid or final fit into
-#a volume or surface with indices matched to source voxels/vertices.
-def results_to_img(fit_img,results,indices):
-
-    indices = np.asarray(indices)
-    if indices.ndim == 2:
-        fit_img[indices[:, 0], indices[:, 1], indices[:, 2], :] = results  # volumetric 3D index
+    if peak2 > 0 and fwhm2 > 0:
+        alpha2 = peak2 ** 2 / fwhm2 ** 2 * 8 * np.log(2)
+        beta2 = fwhm2 ** 2 / peak2 / 8 / np.log(2)
+        gamma2 = (t / peak2) ** alpha2 * np.exp(-(t - peak2) / beta2)
     else:
-        fit_img[indices, :] = results  # surface 1D index
+        abs_diff = np.abs(t - peak2)
+        gamma2 = (abs_diff == abs_diff.min()).astype(float)
 
-    return fit_img
+    hrf = gamma1 - dip * gamma2
+
+    if integrator: # pragma: no cover
+        hrf /= integrator(hrf)
+
+    return hrf.astype(dtype)
+
 

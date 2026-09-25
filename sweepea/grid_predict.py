@@ -18,78 +18,51 @@ import jax.numpy as jnp
 #jax.config.update("jax_disable_jit", True)
 #jax.config.update('jax_platform_name', 'cpu')
 #from jax.experimental import checkify
-import sweepea.utilities as utils
-from scipy.stats import zscore
 
-
-
-#CPU version of grid_pred for testing purposes
-def generate_grid_prediction(args):
-    """
-    Generate a predicted BOLD timeseries for a single CSS pRF model.
-
-    The model:
-        1. Create a 2D Gaussian receptive field at (x, y) with size sigma
-        2. Convolve RF with stimulus to get neural response timeseries
-        3. Apply CSS compressive nonlinearity (response ** n)
-        4. Convolve with double-gamma HRF
-        5. Normalize to percent signal change
-
-    Parameters
-    ----------
-    args : tuple
-        (x, y, sigma, n, stimulus) where stimulus is a VisualStimulus object.
-
-    Returns
-    -------
-    predsig : ndarray
-        Predicted BOLD timeseries (n_timepoints,), or None if error.
-    """
-    try:
-        x, y, sigma, n, stimulus, hrf = args
-
-        # Generate 2D Gaussian receptive field
-        rf = utils.generate_og_receptive_field(x, y, sigma, stimulus.deg_x, stimulus.deg_y)
-
-        #We do normalization steps in visual stim and generate_og_receptive_field, so we don't need to do it here
-        #rf /= ((2 * np.pi * sigma**2) * 1 / np.diff(stimulus.deg_x[0, 0:2])**2)
-
-        # RF × stimulus → neural response timeseries YOU ARE HERE!!!
-        response = utils.generate_rf_timeseries(stimulus.stim_arr, rf)
-
-        # CSS compressive nonlinearity
-        response **= n
-
-        # Convolve with HRF
-        predsig = np.convolve(response, hrf)[0:len(response)]
-
-        # zscore so we can simplify all the regression 
-        predsig = zscore(predsig)
-
-        # this is a way to deal w/ bad parameter combinations. A better way would be to avoid them 
-        # entirely through sensible bounds/constraints
-        if not np.isfinite(predsig).all():
-            # if np.isfinite(predsig).any():
-            #     print('foo!')
-            predsig = np.zeros_like(predsig)
-
-
-        return predsig
-
-    except Exception as e:
-        print(f"Error in generate_grid_prediction: {e}")
-        return None
 
 
 def _zscore_pred(x,x_mu,x_std):
     return (x- x_mu) / x_std
 
-def _degenerate_pred(x,*args):
+def _degenerate_pred(x,*_):
     return jnp.zeros_like(x)
 
 def generate_grid_prediction_jax(params, deg_x, deg_y, stim_arr, hrf):
-    """JAX version of prf prediction
+    """JAX version of the CSS pRF prediction.
+
+    Generate a predicted BOLD time series for a single CSS pRF model.
+
+    The model:
+        1. Create a 2D Gaussian receptive field centered at (x, y) with size sigma
+        2. Multiply the RF by the stimulus to obtain the neural response time series
+        3. Apply the CSS compressive nonlinearity (response ** n)
+        4. Convolve with the HRF
+        5. Z-score the result for simplified regression
+
+    Parameters
+    ----------
+    params : tuple or array-like
+        Parameter vector/tuple containing:
+        (x, y, sigma, n)
+        where x and y are pRF center coordinates, sigma is the pRF size,
+        and n is the compressive nonlinearity exponent.
+    deg_x : array-like
+        Grid of x coordinates for the stimulus.
+    deg_y : array-like
+        Grid of y coordinates for the stimulus.
+    stim_arr : array-like
+        Stimulus array 
+    hrf : array-like
+        Hemodynamic response function kernel used for convolution.
+
+    Returns
+    -------
+    predsig : jax.Array
+        Z-scored predicted BOLD time series with length equal to the stimulus
+        duration. If the signal variance is zero, a zero vector of the same
+        length is returned.
     """
+  
     x, y, sigma, n = params
 
     rf = jnp.exp(-((deg_x - x) ** 2 + (deg_y - y) ** 2) /
@@ -143,7 +116,7 @@ def getGridPreds(grid_space, stimulus, hrf, gridPath=None, batch_size=2000):
     """
 
     #grid_preds = np.empty((len(grid_space), stimulus.run_length), dtype=np.float32)
-    print(f"Starting prediction generation for {len(grid_space)} grid points...")
+    print(f"Starting prediction generation for {len(grid_space)} grid points | batch size={batch_size}...")
 
     @jax.jit(static_argnames='batch_size')
     def gen_preds(space,deg_x, deg_y, stim_arr, hrf,batch_size):

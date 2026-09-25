@@ -24,7 +24,7 @@ The codebase follows a clear prefixed structure:
 
 | File | Role & Description |
 | :--- | :--- |
-| **`H01_config.py`** | Central configuration: host detection (`vader`, `local_mac`, etc.), path generation, `GRID_DEFAULTS` (default `Ns=50`), CSS field names, and `get_gridfit_path(p, Ns)` helper. |
+| **`H01_config.py`** | Central configuration: host detection (`vader`, `local_mac`, etc.), path generation, `GRID_PARAMS` (default `Ns=50`), CSS field names, and `get_gridfit_path(p, Ns)` helper. |
 | **`H02_dataloader.py`** | Unified data ingestion for volumetric (NIfTI) and surface (GIFTI) data, stimulus loading via popeye `VisualStimulus`, and file I/O. |
 | **`H03_fit_utils.py`** | Shared utilities: polynomial detrending, percent signal change, eccentricity-based grid constraints, and `set_dark_theme()` for all figures. |
 | **`H04_grid_predict.py`** | Generates predicted BOLD timeseries for all `(x, y, σ, n)` grid points in parallel (CPU pool). Results cached as `gridfit_{Ns}.npy`. |

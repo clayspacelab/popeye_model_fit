@@ -30,14 +30,14 @@ from scipy.io import savemat
 from scipy.stats import zscore
 from itertools import product
 
-from config import DEFAULT_PARAMS, GRID_DEFAULTS, set_paths
+from config import STIMULUS_PARAMS, GRID_PARAMS, set_paths
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Generate synthetic pRF data')
     parser.add_argument('--n-voxels', type=int, default=100000,
                         help='Number of simulated voxels (default: 100000)')
-    parser.add_argument('--grid-density', type=int, default=GRID_DEFAULTS['Ns'],
-                        help=f'Grid density for parameter sampling (default: {GRID_DEFAULTS["Ns"]})')
+    parser.add_argument('--grid-density', type=int, default=GRID_PARAMS['Ns'],
+                        help=f'Grid density for parameter sampling (default: {GRID_PARAMS["Ns"]})')
     parser.add_argument('--force-cpu', action='store_true',
                         help='Force CPU usage for batch prediction generation')
     return parser.parse_args()
@@ -50,7 +50,6 @@ jax_backend = jax_config.configure_jax(force_cpu=args.force_cpu)
 import sweepea.utilities as utils
 from sweepea.visual_stimulus import VisualStimulus
 from sweepea.dataloader import load_stimuli
-from sweepea.fit_utils import constrain_grids, set_dark_theme
 from sweepea.grid_predict import getGridPreds
 
 
@@ -58,7 +57,7 @@ def main(args,jax_backend):
 
 
     # Use a dummy subject to get paths (stimulus is shared)
-    params = dict(DEFAULT_PARAMS)
+    params = dict(STIMULUS_PARAMS)
     params['subjID'] = 'JC'
     p, _ = set_paths(params['subjID'], data_format='volumetric')
 
@@ -70,10 +69,10 @@ def main(args,jax_backend):
     # Create stimulus object
     stimulus = VisualStimulus(
         stim_arr=bar.astype(np.int16),
-        viewing_distance=params['viewingDistance'],
-        screen_width=params['screenWidth'],
-        scale_factor=params['scaleFactor'],
         tr_length=params['tr_length'],
+        viewing_distance=params['viewingDistance'],
+        stim_width=params['stimWidth'],
+        #scale_factor=params['scaleFactor'],
         #dtype=ctypes.c_int16,
     )
 
@@ -98,7 +97,7 @@ def main(args,jax_backend):
     n_space = np.linspace(0.01, 1, Ns)
 
     params_space_orig = list(product(x_space, y_space, s_space, n_space))
-    params_space = constrain_grids(params_space_orig, stimulus)
+    params_space = utils.constrain_grids(params_space_orig, stimulus)
 
     # Sample random voxels
     nvoxs = args.n_voxels
@@ -144,7 +143,7 @@ def main(args,jax_backend):
     print(f"Saved {len(params_vox)} simulated voxels to {sim_dir}")
 
     # Plot sample voxels with dark theme
-    set_dark_theme()
+    utils.set_dark_theme()
     f, axs = plt.subplots(2, 5, figsize=(20, 10))
     for i in range(10):
         ax = axs[i // 5, i % 5]
