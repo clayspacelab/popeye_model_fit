@@ -25,7 +25,7 @@ import jax
 #jax.config.update("jax_disable_jit", True)
 #jax.config.update('jax_platform_name', 'cpu')
 import jax.numpy as jnp
-from .fit_utils import results_to_img
+from .utils import results_to_img
 
 
 def overload_estimate_jax(estimate, data, prediction):
@@ -140,6 +140,8 @@ def get_grid_estims(grid_preds, grid_space, timeseries_data, gFit, indices,
     gFit : ndarray
         Updated grid fit array.
     """
+    
+    print(f"Grid fit (OLS): {timeseries_data.shape[0]} voxels | {grid_preds.shape[0]} grid points | batch size={batch_size}")
 
     #jitted/vectorized OLS across voxels/grid points, potentially batched to avoid memory overload
     @jax.jit(static_argnames='batch_size')

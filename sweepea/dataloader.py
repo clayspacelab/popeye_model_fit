@@ -47,7 +47,10 @@ def set_paths(data, data_format, stimulus, defaults=None):
         Dictionary of all relevant file paths.
     """
 
-    p = defaults if defaults is not None else {}
+    d = defaults if defaults is not None else {}
+    d['paths'] = {}
+    p = d['paths']
+
     p['pRF_dir'] = os.path.dirname(data)
 
     if data_format == 'volume':        
@@ -79,7 +82,7 @@ def set_paths(data, data_format, stimulus, defaults=None):
     p['fitEstimDir'] = os.path.join(p['popeyeFitDir'], 'fitEstimates')
     os.makedirs(p['fitEstimDir'], exist_ok=True)
 
-    return p
+    return d
 
 # ---------------------------------------------------------------------------
 # Stimulus loading (shared across formats)
@@ -139,7 +142,7 @@ def _hash_grid_inputs(grid_space, stim_params, hrf):
     return hasher.hexdigest()[:10]  # short prefix; plenty for local collision avoidance
 
 
-def get_gridfit_path(p, grid_space, stim_params, hrf, Ns, n_res):
+def get_gridfit_path(stimuli_path, grid_space, stim_params, hrf, Ns, n_res):
     """
     Return the cached grid-prediction path.
 
@@ -170,7 +173,7 @@ def get_gridfit_path(p, grid_space, stim_params, hrf, Ns, n_res):
     str
         Path to the (possibly not-yet-existing) cached grid-predictions file.
     """
-    gridestims_dir = os.path.join(os.path.dirname(p['stimuli_path']), 'gridestims')
+    gridestims_dir = os.path.join(os.path.dirname(stimuli_path), 'gridestims')
     os.makedirs(gridestims_dir, exist_ok=True)
 
     digest = _hash_grid_inputs(grid_space, stim_params, hrf)
@@ -206,7 +209,7 @@ def load_volumetric_data(p):
     metadata : dict
         Extracted metadata: tr_length, voxel_size, nTRs.
     """
-    func_img = nib.load(p['pRF_func'])
+    func_img = nib.load(p['paths']['pRF_func'])
     scan_data = func_img.get_fdata()
     header = func_img.header
 
@@ -215,7 +218,12 @@ def load_volumetric_data(p):
         'nTRs': scan_data.shape[-1],
     }
 
-    p.update(metadata)  # Update params dictionary with nifti metadata
+    # Update params dictionary with nifti metadata
+    p['stimulus_params'].update(metadata)  
+
+    # # Update params dictionary with nifti metadata
+    # p['stimulus_params']['tr_length'] = _tr_to_sec(float(header['pixdim'][4]))
+    # p['nTRs'] = scan_data.shape[-1]
 
     return scan_data, func_img
 
@@ -295,7 +303,7 @@ def load_surface_data(p):
         {'left': ndarray, 'right': ndarray}, each (n_vertices, n_timepoints).
         Only the hemispheres actually found are included.
     """
-    funcFiles = p['pRF_func']
+    funcFiles = p['paths']['pRF_func']
     if isinstance(funcFiles, str):
         funcFiles = [funcFiles]
 
@@ -338,7 +346,7 @@ def load_surface_data(p):
     unique_nTRs = set(nTRs_by_hemi.values())
     if len(unique_nTRs) > 1:
         raise ValueError(f"nTRs differ across hemispheres: {nTRs_by_hemi}")
-    p['nTRs'] = unique_nTRs.pop()
+    p['stimulus_params']['nTRs'] = unique_nTRs.pop()
 
     # --- TR length: found via 'TimeStep' metadata, must agree where present ---
     if all(tr is None for tr in tr_by_hemi.values()):
@@ -350,7 +358,7 @@ def load_surface_data(p):
         unique_trs = set(tr_by_hemi.values())
         if len(unique_trs) > 1:
             raise ValueError(f"tr_length differs across hemispheres: {tr_by_hemi}")
-        p['tr_length'] = unique_trs.pop()
+        p['stimulus_params']['tr_length'] = unique_trs.pop()
 
     return hemi_data
 

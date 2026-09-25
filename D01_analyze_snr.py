@@ -88,9 +88,9 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from scipy import stats
 
-from config import DEFAULT_PARAMS, GRID_DEFAULTS, set_paths
+from config import STIMULUS_PARAMS, GRID_PARAMS, set_paths
 from sweepea.dataloader import load_surface_data
-from sweepea.fit_utils import preprocess_signal, set_dark_theme
+from sweepea.utils import preprocess_signal, set_dark_theme
 
 
 # ─── Defaults ─────────────────────────────────────────────────────────────────
@@ -111,8 +111,8 @@ def parse_args():
                              'simulation: pkl data from S01 (default: subject)')
     parser.add_argument('--subject', '-s', default='MAM0606',
                         help='Subject ID (subject mode only, default: MAM0606)')
-    parser.add_argument('--grid-size', type=int, default=GRID_DEFAULTS['Ns'],
-                        help=f'Ns used in S02 (simulation mode, default: {GRID_DEFAULTS["Ns"]})')
+    parser.add_argument('--grid-size', type=int, default=GRID_PARAMS['Ns'],
+                        help=f'Ns used in S02 (simulation mode, default: {GRID_PARAMS["Ns"]})')
     parser.add_argument('--sweep-period', type=float, default=DEFAULT_SWEEP_PERIOD_S,
                         help=f'Bar sweep cycle period in seconds '
                              f'(default: {DEFAULT_SWEEP_PERIOD_S})')
@@ -388,7 +388,7 @@ def run_simulation_mode(args):
     tr      = args.tr
     sweep_p = args.sweep_period
 
-    params = dict(DEFAULT_PARAMS)
+    params = dict(STIMULUS_PARAMS)
     params['subjID'] = 'JC'
     p, _ = set_paths(params['subjID'], data_format='volumetric')
 

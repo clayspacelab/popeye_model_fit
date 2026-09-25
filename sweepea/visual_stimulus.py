@@ -1,4 +1,5 @@
 """
+Class and functions for processing prf stimuli. Adapted from popeye visual_stimulus.py.
 
 First pass at a stimulus model for abstracting the qualities and functionality of a stimulus
 into an abstract class.  For now, we'll assume the stimulus model only pertains to visual 
@@ -12,14 +13,18 @@ from collections import namedtuple
 from scipy.ndimage.interpolation import zoom
 
 
-def dva(screen_width, viewing_distance):
-    """Computes the visual angle of the display in degrees."""
+def dva(stim_width, viewing_distance):
+    """Computes the visual angle of the stimulus in degrees."""
     #https://www.sr-research.com/eye-tracking-blog/background/visual-angle/
-    return 2 * np.degrees(np.arctan(screen_width / (2 * viewing_distance)))
+    return 2 * np.degrees(np.arctan(stim_width / (2 * viewing_distance)))
 
-def degrees_per_gridpoint(gridpoints_across, screen_width, viewing_distance):
+# def degrees_per_gridpoint(gridpoints_across, stim_width, viewing_distance):
+#     """Computes the number of degrees of visual angle per grid point."""    
+#     return dva(stim_width, viewing_distance) / gridpoints_across
+
+def degrees_per_gridpoint(stim_dva, gridpoints_across):
     """Computes the number of degrees of visual angle per grid point."""    
-    return dva(screen_width, viewing_distance) / gridpoints_across
+    return stim_dva / gridpoints_across
 
 
 def stim2d(stim_arr):
@@ -35,18 +40,18 @@ def generate_coordinate_matrices(gridpoints_across, gridpoints_down, dpp, scale_
        
     This function takes the screen dimensions, the grid points per degree, and a
     scaling factor in order to generate a pair of ndarrays representing the
-    horizontal and vertical extents of the visual display in degrees of visual
+    horizontal and vertical extents of the stimulus in degrees of visual
     angle.
     
     Parameters
     ----------
     gridpoints_across : int
-        The number of grid points along the horizontal extent of the visual display.
+        The number of grid points along the horizontal extent of the visual stimulus.
     gridpoints_down : int
-        The number of grid points along the vertical extent of the visual display.
+        The number of grid points along the vertical extent of the visual stimulus.
     dpp: float
         The number of degrees of visual angle that spans 1 grid point.  This number
-        is computed using the display width and the viewing distance.  See the
+        is computed using the stimulus width and the viewing distance.  See the
         config.init_config for details. 
     scale_factor : float
         The scale factor by which the stimulus is resampled.  The scale factor
@@ -57,10 +62,10 @@ def generate_coordinate_matrices(gridpoints_across, gridpoints_down, dpp, scale_
     Returns
     -------
     deg_x : ndarray
-        An array representing the horizontal extent of the visual display in
+        An array representing the horizontal extent of the visual stimulus in
         terms of degrees of visual angle.
     deg_y : ndarray
-        An array representing the vertical extent of the visual display in
+        An array representing the vertical extent of the visual stimulus in
         terms of degrees of visual angle.
     """
     
@@ -86,7 +91,7 @@ def resample_stimulus(stim_arr, scale_factor=0.05, mode='nearest',
     specified `scale_factor`.  The stimulus array is assumed to be a three
     dimensional ndarray representing the stimulus, in screen pixel coordinates,
     over time.  The first two dimensions of `stim_arr` together represent the
-    exent of the visual display (grid points) and the last dimensions represents
+    exent of the visual stimulus (grid points) and the last dimensions represents
     time (TRs).
 
     The underlying function used here is `scipy.ndimage.zoom`. Some arguments
@@ -143,52 +148,76 @@ _StimParams = namedtuple('_StimParams', ['stim_arr', 'deg_x', 'deg_y', 'run_leng
 class VisualStimulus:
     
     
-    def __init__(self, stim_arr, viewing_distance, screen_width,
-                 scale_factor, tr_length, dtype=np.float32, interp='nearest'):
+    def __init__(self, stim_arr, tr_length, viewing_distance=None, stim_width=None, stim_dva=None,
+                 scale_factor=1.0, nTRs=None, dtype=np.float32, interp='nearest'):
         
         """
-         
-        
-        Paramaters
+        Parameters
         ----------
-        
         stim_arr : ndarray
-            An array containing the visual stimulus at the native resolution. The 
-            visual stimulus is assumed to be three-dimensional (x,y,time).
-        
-        viewing_distance : float
-            The distance between the participant and the display (cm).
-            
-        screen_width : float
-            The width of the display (cm). This is used to compute the visual angle
-            for determining the grid points per degree of visual angle.
-        
-        scale_factor : float
-            The downsampling rate for ball=parking a solution. The `stim_arr` is
-            downsampled so as to speed up the fitting procedure.  The final model
-            estimates will be derived using the non-downsampled stimulus.
-            
+            An array containing the visual stimulus (x,y,time).
+        tr_length : float
+            repitition time (seconds).
+        viewing_distance : float, optional
+            The distance between the participant and the display. Must be
+            given together with `stim_width.
+        stim_width : float, optional
+            The width of the stimulus. This is used together with
+            `viewing_distance` to compute the visual angle. Must be given together with
+            `viewing_distance`; leave both unset and pass `stim_dva` directly
+            instead if the visual angle is already known.
+        stim_dva : float, optional
+            The width of the stimulus in degrees of visual angle. Provide this
+            directly as an alternative to `viewing_distance`/`stim_width`. 
+        scale_factor : float, optional
+            The downsampling rate for ball-parking a solution. (DEPRECATED)
+            Default is 1.0 (no downsampling).
+        nTRs : int, optional
+            The number of TRs in the functional data, used as a sanity check
+            that the stimulus and functional run lengths match. 
+        dtype : numpy dtype, optional
+            Datatype for the stored stimulus and coordinate arrays. Wouldn't advise changing.
+        interp : str, optional
+            Interpolation mode passed to `resample_stimulus` when downsampling
+            (see `scipy.ndimage.zoom`'s `mode` argument). Default is 'nearest'. (DEPRECATED)
         """
+
+        if stim_dva is not None:
+            if viewing_distance is not None or stim_width is not None:
+                raise ValueError(
+                    "Provide either stim_dva, or viewing_distance and stim_width, not both.")
+        else:
+            if viewing_distance is None or stim_width is None:
+                raise ValueError(
+                    "Provide stim_dva, or both viewing_distance and stim_width.")
+            stim_dva = dva(stim_width, viewing_distance)
+
         
         # absorb the vars
         self.dtype = dtype
         self.stim_arr = np.array(stim_arr,dtype=self.dtype) 
         self.tr_length = tr_length
-        self.viewing_distance = viewing_distance
-        self.screen_width = screen_width
+        self.viewing_distance = viewing_distance  # may be None
+        self.stim_width = stim_width          # may be None
+        self.stim_dva = stim_dva
         self.scale_factor = scale_factor
         self.interp = interp
         
         # ascertain stimulus features
         self.gridpoints_across = self.stim_arr.shape[1]
         self.gridpoints_down = self.stim_arr.shape[0]
-        self.run_length = self.stim_arr.shape[2]
-        self.dpp = degrees_per_gridpoint(self.gridpoints_across, self.screen_width, self.viewing_distance)
+        self.dpp = degrees_per_gridpoint(self.stim_dva,self.gridpoints_across)
+
+        #At this point we don't allow stim files w/ timing that deviates from the BOLD data, but nTRs from the BOLD
+        #can be passed as a sanity check that BOLD and stimulus run lengths match
+        if (nTRs is not None) and (nTRs != self.stim_arr.shape[2]):
+            raise ValueError(f"Stimulus TRs ({self.stim_arr.shape[2]}) does not match functional data TRs ({nTRs}).")
+        else:
+            self.run_length = self.stim_arr.shape[2]
         
         #we also want screen width in dva for computing constraints on fits
-        self.screen_dva = dva(self.screen_width, self.viewing_distance)
+        #self.stim_dva = dva(self.stim_width, self.viewing_distance)
 
-        
         # generate coordinate matrices
         self.deg_x, self.deg_y = generate_coordinate_matrices(self.gridpoints_across, 
                                                               self.gridpoints_down, self.dpp, dtype=self.dtype)
@@ -214,7 +243,7 @@ class VisualStimulus:
             
         
         # add dpp for the down-sampled stimulus
-        self.dpp0 = degrees_per_gridpoint(self.gridpoints_across*self.scale_factor, self.screen_width, self.viewing_distance)
+        self.dpp0 = degrees_per_gridpoint(self.stim_dva, self.gridpoints_across * self.scale_factor)
         
         # rescale stim grids according to dpp 
         # (this roughly follows Vista approach to give iterpretable betas in terms of psc as a function of 

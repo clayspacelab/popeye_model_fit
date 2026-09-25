@@ -20,7 +20,7 @@ import jax.numpy as jnp
 from jaxopt import ProjectedGradient
 from jaxopt import projection
 
-from .fit_utils import error_func_min, results_to_img
+from .utils import results_to_img
 from .grid_predict import generate_grid_prediction_jax
 from .grid_fit import overload_estimate_jax
 
@@ -94,6 +94,77 @@ _final_fit_overloads_batch_jit = jax.jit(
 #         print('CPU ONLY!')
 #         return min(16, n_voxels)
 
+
+### ERROR FUNCTIONS
+
+def error_func_lsq(parameters, data, objective_function):
+    """
+    Error function for a least squares solver (full residual vector)
+
+    Parameters
+    ----------
+    parameters : array-like
+        Current (x, y, sigma, n) values.
+    data : ndarray
+        Observed timeseries.
+    objective_function : callable
+        Function that generates predicted timeseries from parameters.
+
+    Returns
+    -------
+    float
+        vector of residuals.
+    """
+
+    prediction = objective_function(parameters)
+
+    #checkify.check(prediction.ndim==1, "foo!")
+
+    #assert not np.any(np.isnan(prediction)), "%s" % parameters
+
+    slope = jnp.dot(prediction, data) / prediction.shape[0]
+
+    #penalty = jnp.minimum(0,jnp.sum(parameters[0:2]**2)-25**2)*100
+
+    error = data - slope*prediction
+    #error = jnp.append(data - slope*prediction,penalty)
+
+    return error
+
+
+def error_func_min(parameters, data, objective_function):
+    """
+    Error function for general minimization objective (sum squared errors)
+
+    Parameters
+    ----------
+    parameters : array-like
+        Current (x, y, sigma, n) values.
+    data : ndarray
+        Observed timeseries.
+    objective_function : callable
+        Function that generates predicted timeseries from parameters.
+
+    Returns
+    -------
+    float
+        0.5 * sum(f_i(x)**2)
+    """
+
+    prediction = objective_function(parameters)
+
+    #checkify.check(prediction.ndim==1, "foo!")
+
+    #assert not np.any(np.isnan(prediction)), "%s" % parameters
+
+    slope = jnp.dot(prediction, data) / prediction.shape[0]
+
+    #penalty = jnp.minimum(0,jnp.sum(parameters[0:2]**2)-25**2)*100
+
+    error = data - slope*prediction
+    #error = jnp.append(data - slope*prediction,penalty)
+
+    return 0.5 * jnp.dot(error,error)
 
 # ---------------------------------------------------------------------------
 # Main dispatcher
